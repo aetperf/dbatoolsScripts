@@ -26,9 +26,13 @@ else
 return $cmsRootGroup.RegisteredServers | select ServerName
 }
 }
-$TempDir = "."
-$ExportDir = "\\GRASRLYOTAB1\tableauIN\Security"
-$CentralManagementServer = ".\DBA01"
+### PARAMETERS ##################
+$TempDir = "c:\temp\"
+$CentralManagementServer = "localhost\DBA01"
+$dbatoolsinstance = "localhost\DBA01"
+### PARAMETERS ##################
+
+
 $serverList = Get-ServerList -cmsName $CentralManagementServer -serverGroup ALL -recurse
 
 $serverList | Format-Table
@@ -54,7 +58,7 @@ $serverList|
  $csvData=Import-csv $TempDir\sysadmins_logins.csv -Delimiter '|'
  $thingToImport = [psobject]$csvData
  
-  Invoke-Sqlcmd -Query "TRUNCATE TABLE DBATOOLS.dbo.SysAdminLogins;" -ServerInstance "localhost\DBA01"
+  Invoke-Sqlcmd -Query "TRUNCATE TABLE DBATOOLS.dbo.SysAdminLogins;" -ServerInstance $dbatoolsinstance
 
  
- Write-SqlTableData -ServerInstance "localhost\DBA01" -DatabaseName "DBATOOLS" -SchemaName "dbo" -TableName "SysAdminLogins" -InputData $thingToImport -Force
+ Write-SqlTableData -ServerInstance $dbatoolsinstance -DatabaseName "DBATOOLS" -SchemaName "dbo" -TableName "SysAdminLogins" -InputData $thingToImport -Force
