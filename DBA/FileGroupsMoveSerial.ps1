@@ -14,10 +14,30 @@
                     Step 3 : rebuild clustered indexes into the Target Filegroup
                     Step 4 : Rebuild Heaps into the Target Filegroup
                     Step 5 : Rebuild Non-Clustered indexes into the Target Filegroup
+
+
+Prerequesites Powershell 7 and sql server module (as of date of writing 2022-09-28) thereis no easy way to install sqlserver module with powershell 7
+WorkAround :
+
+Open a Powershell 7 terminal as administrator and run the following orders
+mkdir "C:\Program Files\PackageManagement\NuGet\Packages\" -Force
+cd "C:\Program Files\PackageManagement\NuGet\Packages\"
+$rootpath = "C:\Program Files\PackageManagement\NuGet\Packages\"
+$sourceNugetExe = "https://dist.nuget.org/win-x86-commandline/latest/nuget.exe"
+$targetNugetExe = "$rootPath\nuget.exe"
+Invoke-WebRequest $sourceNugetExe -OutFile $targetNugetExe
+./nuget install Microsoft.SqlServer.SqlManagementObjects     
+./nuget install Microsoft.Data.SqlClient 
+Install-Module -Name SqlServer -AllowClobber -Force
+
+EXAMPLE
+.\FileGroupsMoveSerial.ps1 -server "." -dbName "DWHRIVAGE_NEW" -doWork $FALSE -onlineOpt $FALSE -tablesToMove "*" -schemaToMove "*" -TargetfileGroup "SECONDARY" -SourcefileGroup "*"
+
+EXAMPLE
+.\FileGroupsMoveSerial.ps1 -server ".\DBA01" -dbName "RedGateMonitorCEGID" -doWork $TRUE -onlineOpt $FALSE -tablesToMove "*" -schemaToMove "data" -TargetfileGroup "DATA" -SourcefileGroup "*"
+
 #>
 
-# .\FileGroupsMoveSerial.ps1 -server "." -dbName "DWHRIVAGE_NEW" -doWork $FALSE -onlineOpt $FALSE -tablesToMove "*" -schemaToMove "*" -TargetfileGroup "SECONDARY"
-# .\FileGroupsMoveSerial.ps1 -server ".\DBA01" -dbName "RedGateMonitorCEGID" -doWork $TRUE -onlineOpt $FALSE -tablesToMove "*" -schemaToMove "data" -TargetfileGroup "DATA" -SourcefileGroup "*"
 param 
 (
     [Parameter(Mandatory)] [string] $server = ".",
@@ -87,7 +107,7 @@ if ( $sqlServer.Information.EngineEdition -eq 'EnterpriseOrDeveloper' -and $onli
 }
 
 #all tables that are not paritioned, that meet our search criteria specified as cmd line parameters
-$tables = $db.Tables | Where-Object { $_.Name -like $tablesToMove -and $_.Schema -like $schemaToMove -and $_.IsPartitioned -eq $FALSE -and $_.FileGroup -like $SourcefileGroup }
+$tables = $db.Tables | Where-Object { $_.Name -like $tablesToMove -and $_.Schema -like $schemaToMove -and $_.IsPartitioned -eq $FALSE -and $_.FileGroup -like $SourcefileGroup } 
 
 $indexesClusteredToMove = @()
 $indexesNonClusteredToMove = @()
@@ -157,6 +177,9 @@ foreach ( $index in $indexesClusteredToMove ) {
     try {
         Write-Output ('INFO - Moving: ' + $index.Parent +'.['+ $index.Name + '] to [' + $TargetfileGroup +']')
         $index.FileGroup = $TargetfileGroup
+        
+        #Should test if one Column is filestream
+        #$index.FileStreamFileGroup = $TargetfileGroup
 
         if ( $doWork -eq $TRUE ) {
             if ($index.isOnlineRebuildSupported ) {$index.OnlineIndexOperation = $onlineIndex}
@@ -190,6 +213,8 @@ foreach ($table in $heapsToMove) {
     $icol1 = New-Object -TypeName Microsoft.SqlServer.Management.SMO.IndexedColumn -argumentlist $idx, $leadingCol, $true
     $idx.IsClustered = $TRUE
     $idx.IndexedColumns.Add($icol1)
+    $idx.FileGroup = $TargetfileGroup
+    #$idx.FileStreamFileGroup = $TargetfileGroup
 
     #Write-Output $idx.Script()
 
@@ -198,10 +223,10 @@ foreach ($table in $heapsToMove) {
         try {
             Write-Output('INFO - Moving Heap: [' + $table.Name+ '] to [' + $TargetfileGroup + '] ' )
             if ( $doWork -eq $TRUE ) {
-                $idx.OnlineIndexOperation = $onlineIndex
+                $idx.OnlineIndexOperation = $using:onlineIndex
                 $idx.Create()
-                $idx.OnlineIndexOperation = $onlineIndex
-                $idx.DropAndMove($TargetfileGroup)
+                $idx.OnlineIndexOperation = $using:onlineIndex
+                $idx.Drop()
             }
         }
         catch {
