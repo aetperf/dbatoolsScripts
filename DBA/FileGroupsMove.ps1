@@ -67,28 +67,31 @@ param
 
 
 
-Write-host "Parameters======================================================================="
-Write-host "Server = ${server}"
-Write-host "dbName = ${dbName}"
-Write-host "doWork = ${doWork}"
-Write-host "onlineOpt = ${onlineOpt}"
-Write-host "tablesToMove = ${tablesToMove}"
-Write-host "schemaToMove = ${schemaToMove}"
-Write-host "TargetfileGroup = ${TargetfileGroup}"
-Write-host "Degree = ${Degree}"
-Write-host "Parameters======================================================================="
+Write-host "INFO - Parameters======================================================================="
+Write-host "INFO - Server = ${server}"
+Write-host "INFO - dbName = ${dbName}"
+Write-host "INFO - doWork = ${doWork}"
+Write-host "INFO - onlineOpt = ${onlineOpt}"
+Write-host "INFO - tablesToMove = ${tablesToMove}"
+Write-host "INFO - schemaToMove = ${schemaToMove}"
+Write-host "INFO - TargetfileGroup = ${TargetfileGroup}"
+Write-host "INFO - Degree = ${Degree}"
+Write-host "INFO - Parameters======================================================================="
 
 
 Import-Module SqlServer
 
 $sqlServer = New-Object ('Microsoft.SqlServer.Management.Smo.Server') -argumentlist $server
 
+#Reduce impact of loading metadata
+$sqlServer.SetDefaultInitFields($FALSE)
+
 $db = $sqlServer.Databases | Where-Object { $_.Name -eq $dbName }
 $onlineIndex = $FALSE
 $tableCount = 0 #simple counter for tables
 
 if ($db.Name -ne $dbName) {
-    Write-Output('Database not found')
+    Write-Output('ERROR - Database not found')
     return
 }
 
@@ -98,11 +101,11 @@ $destFileGroup = ($db.FileGroups | Where-Object { $_.Name -eq $TargetfileGroup }
 
 #check to see if the destination file group exists
 if ( $destFileGroup.State -ne "Existing") {
-    Write-Output('Destination filegroup not found')
+    Write-Output('ERROR - Destination filegroup not found')
     return
 }
 
-Write-Output ('Database: ' + $db.Name)
+Write-Output ('INFO - Database Found : ' + $db.Name)
 
 #if edition supports online indexing and the user requested it, turn it on
 if ( $sqlServer.Information.EngineEdition -eq 'EnterpriseOrDeveloper' -and $onlineOpt -eq $TRUE ) {
@@ -110,7 +113,12 @@ if ( $sqlServer.Information.EngineEdition -eq 'EnterpriseOrDeveloper' -and $onli
 }
 
 #all tables that are not paritioned, that meet our search criteria specified as cmd line parameters
-$tables = $db.Tables | Where-Object { $_.Name -like $tablesToMove -and $_.Schema -like $schemaToMove -and $_.IsPartitioned -eq $FALSE -and $_.FileGroup -like $SourcefileGroup }
+$TablesEnum = $sqlServer.Databases["${dbName}"].Tables.GetEnumerator()
+$tables = $TablesEnum | Where-Object { ($_.Name -like $tablesToMove) -and ($_.Schema -like $schemaToMove) -and ($_.IsPartitioned -eq $FALSE) -and ($_.FileGroup -like $SourcefileGroup) } | Select Name, Schema, FileGroup, HasClusteredIndex, Indexes
+
+Write-Output("INFO - Found "+ $tables.count + " Tables")
+
+#$tables = $db.Tables | Where-Object { $_.Name -like $tablesToMove -and $_.Schema -like $schemaToMove -and $_.IsPartitioned -eq $FALSE -and $_.FileGroup -like $SourcefileGroup }
 
 $indexesClusteredToMove = @()
 $indexesNonClusteredToMove = @()
@@ -130,14 +138,14 @@ foreach ( $table in $tables ) {
         if ( $index.IndexType -ne "HeapIndex") {
             if ( $index.IndexType -eq "ClusteredIndex" -or $index.IndexType -eq "ClusteredColumnStoreIndex" ) {
                 if ( $index.FileGroup -ne $TargetfileGroup ) {
-                    Write-Output( 'CLUSTERED INDEX : ' + $table.Schema + '.' + $table.Name + " " + $index.Name)
+                    Write-Output( 'INFO - CLUSTERED INDEX : ' + $table.Schema + '.' + $table.Name + " " + $index.Name)
                     $tableCount++
                     $indexesClusteredToMove += $index
                 }
             }
             else { # non clustered indexes
                 if ( $index.FileGroup -ne $TargetfileGroup ) {
-                    Write-Output( 'NON CLUSTERED INDEX : ' + $table.Schema + '.' + $table.Name + " " + $index.Name)
+                    Write-Output( 'INFO - NON CLUSTERED INDEX : ' + $table.Schema + '.' + $table.Name + " " + $index.Name)
                     $tableCount++
                     $indexesNonClusteredToMove += $index
                 }
@@ -147,11 +155,15 @@ foreach ( $table in $tables ) {
         
     }
     if ($table.HasClusteredIndex -eq $FALSE -and $table.FileGroup -ne $TargetfileGroup) {
-        Write-Output( 'HEAP : ' + $table.Schema + '.' + $table.Name)
+        Write-Output( 'INFO - HEAP : ' + $table.Schema + '.' + $table.Name)
         $tableCount++
         $heapsToMove += $table
     }
 }
+
+Write-Output( "INFO - Found "+ $indexesClusteredToMove.count + " Clustered Indexes To Move")
+Write-Output( "INFO - Found "+ $indexesNonClusteredToMove.count+ " Non Clustered Indexes To Move")
+Write-Output( "INFO - Found "+ $heapsToMove.count + " Heaps To Move")
 
 #confirmation of the move request
 $confirmation = Read-Host "Are you sure you want to move the" $tableCount "objects listed above to the destination filegroup? (y/n)"
@@ -164,14 +176,14 @@ if ($confirmation -ne 'y') {
 #Deactivate NonClusteredToMove
 foreach ( $index in $indexesNonClusteredToMove ) {
     try {
-        Write-Output ('Deactivate Non clustered index: ' + $index.Parent + '.['+ $index.Name +']')
+        Write-Output ('INFO - Deactivate Non clustered index: ' + $index.Parent + '.['+ $index.Name +']')
         
         if ( $doWork -eq $TRUE ) {
             $index.Disable()
         }
     }
     catch {
-        Write-Output ('Failed Disabling index : ' + $index.Parent + '.['+ $index.Name +'] :' + $_ + $error[0].Exception.InnerException )
+        Write-Output ('ERROR - Failed Disabling index : ' + $index.Parent + '.['+ $index.Name +'] :' + $_ + $error[0].Exception.InnerException )
         return
     }
 }#end for each index
@@ -185,37 +197,51 @@ foreach ( $index in $indexesNonClusteredToMove ) {
 ##                                                                                                    ##
 ########################################################################################################
 
-$Batch = 0
-$BatchSize = $Degree*5
+[int]$Batch = 0
+[int]$BatchSize = [int]$Degree*50
 
-Write-Host("Starting Clustered Index Rebuild by Batch of " + $BatchSize )
+Write-Host("INFO - Starting Clustered Index Rebuild by Batch of " + $BatchSize )
 # parallel rebuild clustered index (Batched to avoid memory saturation)
 
-$ObjectsProcessing = [System.Collections.Generic.List[object]]::new()
-do {
+
+do 
+{
      # Create an arrary with limited number of objects in it for memory management
-     $ObjectsProcessing.Clear()
-     for ($i = $Batch; (($i -lt ($Batch + $BatchSize)) -and ($i -lt $indexesClusteredToMove.count)); $i++) {
+     $ObjectsProcessing = [System.Collections.Generic.List[System.Object]]::new()
+     for ($i = $Batch; (($i -lt ($Batch + $BatchSize)) -and ($i -lt $indexesClusteredToMove.count)); $i++) 
+     {
          $ObjectsProcessing.add($indexesClusteredToMove[$i])
      }
+     $ObjectsProcessing | Format-Table
 
-    $duration=(Measure-Command{$ClusteredIndexlogs = $ObjectsProcessing | ForEach-Object -Parallel {
+    $duration=(Measure-Command{$ClusteredIndexlogs = $ObjectsProcessing | ForEach-Object -Parallel{
         $i_tfg=$using:TargetfileGroup
         $i_server=$using:server
         $i_db=$using:dbName
         $i_indexname = $_.Name
         $i_tablename = $_.Parent.Name
         $i_schema = $_.Parent.Schema
-        
-        $new_server=New-Object ('Microsoft.SqlServer.Management.Smo.Server') -argumentlist $i_server # Open a new connection
-        
-        $i_index = $new_server.Databases[$i_db].Tables[$i_tablename,$i_schema].Indexes[$i_indexname] 
+        try {
+            $new_server=New-Object('Microsoft.SqlServer.Management.Smo.Server') -argumentlist $i_server # Open a new connection
+        }
+        catch {
+            Write-Output ("ERROR - Failed to Connect: " + $_  + $error[0].Exception.InnerException )
+            return
+        }
+       
+        try {
+            $i_index = $new_server.Databases["${i_db}"].Tables[$i_tablename,$i_schema].Indexes[$i_indexname] 
+        }
+        catch {
+            Write-Output ("ERROR - Cannot Access Index : " + $_  + $error[0].Exception.InnerException )
+            return
+        }
 
         if ($i_index.count -eq 1)
         {
             try {
                 $i_index.FileGroup = $i_tfg
-                Write-Output ('Moving: ['+ $i_index.Parent.Schema +'].[' + $i_index.Parent.Name + '].['+ $i_index.Name +'] To Filegroup [' + $i_index.FileGroup + ']')
+                Write-Output ("INFO - Moving: ["+ $i_index.Parent.Schema +"].[" + $i_index.Parent.Name + "].["+ $i_index.Name +"] To Filegroup [" + $i_index.FileGroup + "]")
                 
                 if ( $using:doWork -eq $TRUE ) {
                     if ($_.isOnlineRebuildSupported ) {$_.OnlineIndexOperation = $using:onlineIndex}
@@ -223,20 +249,23 @@ do {
                 }
             }
             catch {
-                Write-Output ('Failed Moving: ['+ $i_index.Parent.Schema +'].[' + $i_index.Parent.Name + '].['+ $i_index.Name +'] To Filegroup [' + $i_index.FileGroup + ']' + $_  + $error[0].Exception.InnerException )
+                Write-Output ("ERROR - Failed Moving: ["+ $i_index.Parent.Schema +"].[" + $i_index.Parent.Name + "].["+ $i_index.Name +"] To Filegroup [" + $i_index.FileGroup + "]")
                 return
             }
-        }
-        #[gc]::Collect()  ## To avoid Too Much Memory consumption
-    } -ThrottleLimit $Degree
+        } 
+        
+        
+    } -ThrottleLimit $Degree -UseNewRunspace
     } ).seconds
 
-    $ClusteredIndexlogs
+    $ClusteredIndexlogs 
 
-    Write-Host("Completed Clustered Index Rebuild : ${duration} s")
-    #[gc]::Collect() # garbage collection to recover memory
-    
-    $Batch = $Batch + $BatchSize
+    [int]$BatchNext=$Batch + $BatchSize
+
+    Write-Host("INFO - Completed Clustered Index Rebuild [Batch "+$Batch + "-"+$BatchNext+"]:"+ ${duration} +"s")
+
+        
+    $Batch = $BatchNext
 } while ($Batch -lt $indexesClusteredToMove.count)
 
 #if we didn't find a clustered index after looking at all the indexes, it's a heap. Let's move that too
@@ -257,16 +286,16 @@ do {
     
 $Batch = 0
 
-Write-Host("Starting Heap Rebuild by Batch of " + $BatchSize )
+Write-Host("INFO - Starting Heap Rebuild by Batch of " + $BatchSize )
 
-$ObjectsProcessing = [System.Collections.Generic.List[object]]::new()
+
 do {
     # Create an arrary with limited number of objects in it for memory management
-    $ObjectsProcessing.Clear()
+    $ObjectsProcessing = [System.Collections.Generic.List[object]]::new()
     for ($i = $Batch; (($i -lt ($Batch + $BatchSize)) -and ($i -lt $heapsToMove.count)); $i++) {
         $ObjectsProcessing.add($heapsToMove[$i])
     }
-    $duration=(Measure-Command{$Heaplogs = $heapsToMove | ForEach-Object -Parallel {
+    $duration=(Measure-Command{$Heaplogs = $ObjectsProcessing | ForEach-Object -Parallel {
         $i_tfg=$using:TargetfileGroup
         $i_server=$using:server
         $i_db=$using:dbName
@@ -291,7 +320,7 @@ do {
         #check to see if the table is not already in the destination filegroup and the table is indexable 
         if ( $_.FileGroup -ne $i_tfg -and $_.IsIndexable -eq $TRUE) {
             try {
-                Write-Output('Moving Heap : [' + $i_table.Schema +'].['+ $i_tablename+']')
+                Write-Output('INFO - Moving Heap : [' + $i_table.Schema +'].['+ $i_tablename+']')
                 if ( $using:doWork -eq $TRUE ) {
                     $idx.OnlineIndexOperation = $using:onlineIndex
                     $idx.Create()
@@ -300,20 +329,20 @@ do {
                 }
             }
             catch {
-                Write-Output('Failed moving heap : [' + $i_table.Schema +'].[' + $i_tablename + '] to [' + $i_tfg + '] : ' +$_ + $error[0].Exception.InnerException )
-                Write-Output('Remove any Tempory indexes created')
+                Write-Output('ERROR - Failed moving heap : [' + $i_table.Schema +'].[' + $i_tablename + '] to [' + $i_tfg + '] : ' +$_ + $error[0].Exception.InnerException )
+                Write-Output('ERROR - Remove any Tempory indexes created')
                 return
             }
         }
         else {
-            Write-Output($_.Name + ' is already in destination filegroup')
+            Write-Output('INFO - '+ $_.Name + ' is already in destination filegroup')
         }
     } -ThrottleLimit $Degree
     }).Seconds
 
     $Heaplogs
 
-    Write-Host("Completed Heap Rebuild : ${duration} s")
+    Write-Host("INFO - Completed Heap Rebuild : ${duration} s")
     #[gc]::Collect() # garbage collection to recover memory
     $Batch = $Batch + $BatchSize
 }while ($Batch -lt $heapsToMove.count)
@@ -321,12 +350,12 @@ do {
 
 $Batch=0
 
-Write-Host("Starting Non Clustered Index Rebuild by Batch of " + $BatchSize )
+Write-Host("INFO - Starting Non Clustered Index Rebuild by Batch of " + $BatchSize )
 # parallel rebuild clustered index (Batched to avoid memory saturation)
 
 do {
     # Create an arrary with limited number of objects in it for memory management
-    $ObjectsProcessing.Clear()
+    $ObjectsProcessing = [System.Collections.Generic.List[object]]::new()
     for ($i = $Batch; (($i -lt ($Batch + $BatchSize)) -and ($i -lt $indexesNonClusteredToMove.count)); $i++) {
         $ObjectsProcessing.add($indexesNonClusteredToMove[$i])
     }
@@ -348,7 +377,7 @@ do {
             try {
                 
                 $i_index.FileGroup = $i_tfg
-                Write-Output ('Moving: ['+ $i_index.Parent.Schema +'].[' + $i_index.Parent.Name + '].['+ $i_index.Name +'] To Filegroup [' + $i_index.FileGroup + ']')
+                Write-Output ('INFO - Moving: ['+ $i_index.Parent.Schema +'].[' + $i_index.Parent.Name + '].['+ $i_index.Name +'] To Filegroup [' + $i_index.FileGroup + ']')
                 
 
                 if ( $using:doWork -eq $TRUE ) {
@@ -357,7 +386,7 @@ do {
                 }
             }
             catch {
-                Write-Output ('Failed Moving: ['+ $i_index.Parent.Schema +'].[' + $i_index.Parent.Name + '].['+ $i_index.Name +'] To Filegroup [' + $i_index.FileGroup + ']' + $_  + $error[0].Exception.InnerException )
+                Write-Output ('ERROR - Failed Moving: ['+ $i_index.Parent.Schema +'].[' + $i_index.Parent.Name + '].['+ $i_index.Name +'] To Filegroup [' + $i_index.FileGroup + ']' + $_  + $error[0].Exception.InnerException )
                 return
             }
         }
