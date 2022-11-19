@@ -102,6 +102,7 @@ $endtime = $(GET-DATE)
 
 New-TimeSpan -Start $startdate -End $endtime
 Write-Output "Completed Successfully"
+Stop-Transcript
 
 #Exit OK
 [System.Environment]::Exit(0)
