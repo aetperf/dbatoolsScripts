@@ -68,7 +68,7 @@ Write-Log -Level INFO -Message "Parameter FileCount = ${FileCount}"
 Write-Log -Level INFO -Message "Parameter Timeout = ${Timeout}"
 
 # Select Normal and Open Writable databases exluding system databases except msdb
-$Databases = Get-DbaDatabase -SqlInstance $SqlInstance -ExcludeDatabase "tempdb","model","BMX_BI_STUDY" | Where-Object {($_.IsUpdateable) -and ($_.Status -ilike "Normal*")}
+$Databases = Get-DbaDatabase -SqlInstance $SqlInstance -ExcludeDatabase "tempdb","model" | Where-Object {($_.IsUpdateable) -and ($_.Status -ilike "Normal*")}
 Write-Log -Level INFO -Message "Databases detail in body" -Body $Databases
 $TimestampLogFormat=(Get-LoggingDefaultFormat).Split("]")[0].Split("+")[1].Replace("}","")
 
