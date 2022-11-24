@@ -144,7 +144,7 @@ $duration=(Measure-Command{
     $ResultsCount = $ResultsObjects.Count
     
    
-    $resultinfos = $ResultsObjects.Values | Select-Object ComputerName, InstanceName, Database,Type,Software , Start, End, Duration,TotalSize, CompressedBackupSize, Verified, Backupcomplete, Backupfilescount, BackupPath  | Sort-Object -Property Database
+    $resultinfos = $ResultsObjects.Values | Select-Object ComputerName, InstanceName, Database,Type,Software , Start, End, Duration,TotalSize, CompressedBackupSize, Verified, Backupcomplete, Backupfilescount, BackupPath,Script  | Sort-Object -Property Database
     
     $ResultAllDb = $ResultsObjects.Keys | Foreach-Object { [PSCustomObject]@{'Database' = $_ }}
     $DatabasesBackupProblems = $ResultAllDb | LeftJoin $resultinfos -On Database | where-object{$null -eq $_.BackupComplete -Or $_BackupComplete -eq $False}
@@ -153,7 +153,7 @@ $duration=(Measure-Command{
 
     # Log Results
     foreach ($resultinfo in $resultinfos) {
-        $Message= "ComputerName : " + $resultinfo.ComputerName + " | InstanceName : " + $resultinfo.InstanceName + " | Database : " + $resultinfo.Database + " | Type : " + $resultinfo.Type + " | Start : " + $resultinfo.Start + " | End : " + $resultinfo.End + " | Duration : " + $resultinfo.Duration  + " | TotalSize : " + $resultinfo.TotalSize + " | CompressedBackupSize : " + $resultinfo.CompressedBackupSize + " | Verified : " + $resultinfo.Verified + " | Backupfilescount : " + $resultinfo.Backupfilescount + " | BackupPath : " + $resultinfo.BackupPath
+        $Message= "ComputerName : " + $resultinfo.ComputerName + " | InstanceName : " + $resultinfo.InstanceName + " | Database : " + $resultinfo.Database + " | Type : " + $resultinfo.Type + " | Start : " + $resultinfo.Start + " | End : " + $resultinfo.End + " | Duration : " + $resultinfo.Duration  + " | TotalSize : " + $resultinfo.TotalSize + " | CompressedBackupSize : " + $resultinfo.CompressedBackupSize + " | Verified : " + $resultinfo.Verified + " | Backupfilescount : " + $resultinfo.Backupfilescount + " | BackupPath : " + $resultinfo.BackupPath+ " | BackupScript : " + $resultinfo.Script
         if ($resultinfo.Backupcomplete)
         {
             Write-Log -Level INFO -Message $Message
