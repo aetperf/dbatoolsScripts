@@ -93,21 +93,24 @@
     Write-Log -Level INFO -Message "Parameter FileCount : ${FileCount}"
     Write-Log -Level INFO -Message "Parameter Timeout : ${Timeout}"
     
+
+    $silentInsecureConnectionLog=Set-DbatoolsInsecureConnection -SessionOnly
+
     # Select Normal and Open Writable databases exluding system databases except msdb
     
     
     #Write-Log -Level DEBUG -Message "Databases found by Get-DbaDatabase detail in body" -Body $Databases
     
-    switch ($BackupType) 
+    switch ( $BackupType ) 
         {
             "Full" 
                 {
                     $BackupExtension="bak"  
-                    $Databases = Get-DbaDatabase -SqlInstance $SqlInstance -ExcludeDatabase "tempdb","model" | Where-Object {($_.IsUpdateable) -and ($_.Status -ilike "Normal*")}
+                    $Databases = Get-DbaDatabase -SqlInstance $SqlInstance -ExcludeDatabase "tempdb","model"  | Where-Object {($_.IsUpdateable) -and ($_.Status -ilike "Normal*")}
                 }
             "Diff" 
                 {
-                    $BackupExtension="diff" 
+                    $BackupExtension="bak" 
                     $Databases = Get-DbaDatabase -SqlInstance $SqlInstance -ExcludeDatabase "tempdb","model","master" | Where-Object {($_.IsUpdateable) -and ($_.Status -ilike "Normal*")}
                 }
             "Log"  
@@ -117,6 +120,8 @@
                 }
     
         }
+
+        Write-Log -Level INFO -Message "BackupExtension : ${BackupExtension}"
         
     
     
@@ -133,23 +138,34 @@
         $BackupDirectory=$using:BackupDirectory
         $FileCount=$using:FileCount
         $BackupType=$using:BackupType
+        $BackupExtension=$using:BackupExtension
     
-        try {            
-                $resbackup = Backup-DbaDatabase -SqlInstance $SqlInstance -Database $Database -Type $BackupType -CompressBackup -Checksum -Verify -FileCount $FileCount -FilePath "${BackupDirectory}\servername\instancename\dbname\backuptype\servername_dbname_backuptype_timestamp.${BackupExtension}" -TimeStampFormat "yyyyMMdd_HHmm" -ReplaceInName -CreateFolder #-ErrorAction Stop -EnableException
+        try {   
+                       
+                $resbackup = Backup-DbaDatabase -SqlInstance $SqlInstance -Database $Database -Type $BackupType -CompressBackup -Checksum -Verify -FileCount $FileCount -Path "${BackupDirectory}\servername\instancename\dbname\backuptype\" -FilePath "servername_dbname_backuptype_timestamp.${BackupExtension}" -TimeStampFormat "yyyyMMdd_HHmm" -ReplaceInName -CreateFolder -WarningVariable WarningVariable -EnableException
                 $silentres = $ResultsDict.TryAdd($Database,$resbackup)
             }
             catch  {
-                Write-Host "[ERROR] - Backup $BackupType of $Database Failed"
-                $silentres=$ResultsDict.TryAdd($Database,$resbackup)
+                if ($WarningVariable)
+                 {  
+                    $ErrorMessage = ""
+                    foreach ($warning in $WarningVariable) {
+                        $ErrorMessage += $WarningVariable.Message
+                        $ErrorMessage += "`n"  # This is a newline character
+                    }
+                    Write-Output "Warnings occurred: $ErrorMessage"
+                 }            
+                $ExitError=[PSCustomObject]@{Database = $Database; ErrorMessage = $ErrorMessage}                
+                $ResultsDict.TryAdd($Database,$ExitError)
             } 
         } -ThrottleLimit $Degree -TimeoutSeconds $Timeout 
     } ).TotalSeconds
          
         # Get Results from $ResultsObjects ConcurrentDictionary and find issues
-        $ResultsCount = $ResultsObjects.Count
-        
+        $ResultsCount = $ResultsObjects.Count        
        
-        $resultinfos = $ResultsObjects.Values | Select-Object ComputerName, InstanceName, Database,Type,Software , Start, End, Duration,TotalSize, CompressedBackupSize, Verified, Backupcomplete, Backupfilescount, BackupPath,Script  | Sort-Object -Property Database
+        $resultinfos = $ResultsObjects.Values | Select-Object ComputerName, InstanceName, Database,Type,Software , Start, End, Duration,TotalSize, CompressedBackupSize, Verified, Backupcomplete, Backupfilescount, BackupPath,Script, ErrorMessage  | Sort-Object -Property Database
+
         
         $ResultAllDb = $ResultsObjects.Keys | Foreach-Object { [PSCustomObject]@{'Database' = $_ }}
         $DatabasesBackupProblems = $ResultAllDb | LeftJoin $resultinfos -On Database | where-object{$null -eq $_.BackupComplete -Or $_BackupComplete -eq $False}
@@ -168,7 +184,7 @@
         
         foreach ($resultinfo in $DatabasesBackupProblems)
         {
-            $Message= "InstanceName : " + $SqlInstance + " | Database : " + $resultinfo.Database + " | Type : " + $BackupType
+            $Message= "InstanceName : " + $SqlInstance + " | Database : " + $resultinfo.Database + " | Type : " + $BackupType + " | Error Message : " + $resultinfo.ErrorMessage
             Write-Log -Level ERROR -Message $Message
         }
     
