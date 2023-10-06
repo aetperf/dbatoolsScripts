@@ -129,7 +129,8 @@
     $ResultsObjects = [System.Collections.Concurrent.ConcurrentDictionary[string,System.Object]]::new()
     
     $duration=(Measure-Command{
-    
+        
+        # Get Databases list and loop on each database to backup in parallel
         $SilentdbatoolsResults = $Databases | Sort-Object -Property Size -Descending | ForEach-Object -Parallel {
     
         $ResultsDict = $using:ResultsObjects #mapped to the $ResultsObjects ConcurrentDictionnary (Thread Safe)
@@ -141,8 +142,10 @@
         $BackupExtension=$using:BackupExtension
     
         try {   
-                       
+                # Backup Database using dbatools Backup-DbaDatabase      
                 $resbackup = Backup-DbaDatabase -SqlInstance $SqlInstance -Database $Database -Type $BackupType -CompressBackup -Checksum -Verify -FileCount $FileCount -Path "${BackupDirectory}\servername\instancename\dbname\backuptype\" -FilePath "servername_dbname_backuptype_timestamp.${BackupExtension}" -TimeStampFormat "yyyyMMdd_HHmm" -ReplaceInName -CreateFolder -WarningVariable WarningVariable -EnableException
+                
+                # Add result to ConcurrentDictionary for logging and return
                 $silentres = $ResultsDict.TryAdd($Database,$resbackup)
             }
             catch  {
@@ -161,15 +164,17 @@
         } -ThrottleLimit $Degree -TimeoutSeconds $Timeout 
     } ).TotalSeconds
          
-        # Get Results from $ResultsObjects ConcurrentDictionary and find issues
+        # Count Results
         $ResultsCount = $ResultsObjects.Count        
        
+        # Get Results from $ResultsObjects ConcurrentDictionary and find issues
         $resultinfos = $ResultsObjects.Values | Select-Object ComputerName, InstanceName, Database,Type,Software , Start, End, Duration,TotalSize, CompressedBackupSize, Verified, Backupcomplete, Backupfilescount, BackupPath,Script, ErrorMessage  | Sort-Object -Property Database
 
-        
+        # Get All Databases and left join with results to find databases with backup problems
         $ResultAllDb = $ResultsObjects.Keys | Foreach-Object { [PSCustomObject]@{'Database' = $_ }}
         $DatabasesBackupProblems = $ResultAllDb | LeftJoin $resultinfos -On Database | where-object{$null -eq $_.BackupComplete -Or $_BackupComplete -eq $False}
         
+        # Count Databases with backup problems
         $DatabasesBackupProblemsCount = $DatabasesBackupProblems.Count
     
         # Log Results
@@ -181,7 +186,7 @@
             }
     
         }
-        
+        # Log Results for Databases with backup problems
         foreach ($resultinfo in $DatabasesBackupProblems)
         {
             $Message= "InstanceName : " + $SqlInstance + " | Database : " + $resultinfo.Database + " | Type : " + $BackupType + " | Error Message : " + $resultinfo.ErrorMessage
