@@ -54,7 +54,7 @@ try {
     $ProfileCommand.Connection = $ProfileConnection
     $ProfileCommand.CommandText = "DELETE FROM dbo.profiles WHERE [database_name]='$TargetDatabase'"
     $DeletedRows=$ProfileCommand.ExecuteNonQuery()
-    write-host "Deleted $DeletedRows rows from dbo.profiles where [database_name]=$TargetDatabase"
+    write-host "Deleted $DeletedRows rows from ${ProfileDatabase}.dbo.profiles where [database_name]=$TargetDatabase"
     $ProfileConnection.Close()
 
 

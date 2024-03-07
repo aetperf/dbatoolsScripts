@@ -16,14 +16,14 @@ TCOUNTDPROFILE AS
 (
 SELECT string_agg('CAST(COUNT_BIG(DISTINCT '+CAST(quotename(c.name) as nvarchar(max))+') as nvarchar(4000))'+ quotename(c.name),',') col_profile ,OBJECT_NAME(c.object_id) table_name, SCHEMA_NAME([schema_id]) [schema_name], string_agg(quotename(c.name),',') colname
 from sys.all_columns c inner join sys.all_objects o on o.object_id=c.object_id
-where o.type='U' and o.object_id>0
+where o.type='U' and o.object_id>0 and c.system_type_id not in (241,34,35,99,165)
 group by OBJECT_NAME(c.object_id),SCHEMA_NAME([schema_id])
 ),
 TMAXVALUEPROFILE AS 
 (
 SELECT string_agg('CAST(MAX('+CAST(quotename(c.name) as nvarchar(max))+') as nvarchar(4000)) '+ quotename(c.name),',') col_profile ,OBJECT_NAME(c.object_id) table_name, SCHEMA_NAME([schema_id]) [schema_name], string_agg(quotename(c.name),',') colname
 from sys.all_columns c inner join sys.all_objects o on o.object_id=c.object_id
-where o.type='U' and o.object_id>0 and c.system_type_id not in (104)
+where o.type='U' and o.object_id>0 and c.system_type_id not in (104,241,35,99,34,165)
 group by OBJECT_NAME(c.object_id),SCHEMA_NAME([schema_id])
 )
 ,
@@ -31,7 +31,7 @@ TMINVALUEPROFILE AS
 (
 SELECT string_agg('CAST(MIN('+CAST(quotename(c.name) as nvarchar(max))+') as nvarchar(4000)) '+ quotename(c.name),',') col_profile ,OBJECT_NAME(c.object_id) table_name, SCHEMA_NAME([schema_id]) [schema_name], string_agg(quotename(c.name),',') colname
 from sys.all_columns c inner join sys.all_objects o on o.object_id=c.object_id
-where o.type='U' and o.object_id>0 and c.system_type_id not in (104)
+where o.type='U' and o.object_id>0 and c.system_type_id not in (104,241,35,99,34,165)
 group by OBJECT_NAME(c.object_id),SCHEMA_NAME([schema_id])
 )
 ,
