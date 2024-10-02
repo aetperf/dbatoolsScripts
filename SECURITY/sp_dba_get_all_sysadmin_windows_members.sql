@@ -53,7 +53,7 @@ permission_path nvarchar(4000));
 
    SELECT DISTINCT * FROM #sysadminlist
    UNION
-   SELECT * FROM #xplogininfo WHERE privilege='admin' AND type = 'user';
+   SELECT * FROM #xplogininfo WHERE privilege='admin' AND type = 'user' and account_name not like 'NT %';
 
    RETURN 
 END 
