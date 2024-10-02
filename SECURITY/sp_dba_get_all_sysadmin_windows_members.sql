@@ -51,7 +51,9 @@ permission_path nvarchar(4000));
    CLOSE cur_Loginfetch 
    DEALLOCATE cur_Loginfetch 
 
-   SELECT DISTINCT * FROM #sysadminlist;
+   SELECT DISTINCT * FROM #sysadminlist
+   UNION
+   SELECT * FROM #xplogininfo WHERE privilege='admin' AND type = 'user';
 
    RETURN 
 END 
