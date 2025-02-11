@@ -1,0 +1,44 @@
+DROP TABLE IF EXISTS [security].GroupDatabaseDBRoles;
+DROP TABLE IF EXISTS [security].GroupMembers;
+DROP TABLE IF EXISTS [security].Groups;
+DROP TABLE IF EXISTS [security].Users;
+
+
+
+
+-- Table des groupes, avec une référence à un SuperGroup
+CREATE TABLE [security].Groups (
+    GroupID INT IDENTITY(1,1) PRIMARY KEY,
+    GroupName NVARCHAR(100) NOT NULL UNIQUE,
+    G_LastUpdateDate DATETIME2(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    G_LastUpdateLogin SYSNAME NOT NULL DEFAULT(SUSER_NAME())
+);
+
+-- Tables des Users
+CREATE TABLE [security].Users (
+    UserID INT IDENTITY(1,1) PRIMARY KEY,
+    UserLogin NVARCHAR(255) NOT NULL UNIQUE,
+    U_LastUpdateDate DATETIME2(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    U_LastUpdateLogin SYSNAME NOT NULL DEFAULT(SUSER_NAME())
+)
+
+-- Table des membres de groupe
+CREATE TABLE [security].GroupMembers (
+    GroupID INT NOT NULL,
+    UserID INT NOT NULL,
+    GM_LastUpdateDate DATETIME2(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    GM_LastUpdateLogin SYSNAME NOT NULL DEFAULT(SUSER_NAME()),
+    FOREIGN KEY (GroupID) REFERENCES [security].Groups(GroupID),
+    PRIMARY KEY (GroupID, UserID)
+);
+
+-- Table des liaisons entre groupes, bases de données et rôles
+CREATE TABLE [security].GroupDatabaseDBRoles (
+    GroupID INT NOT NULL,
+    DatabaseName NVARCHAR(128) NOT NULL,
+    DBRole NVARCHAR(100) NOT NULL,
+    GDR_LastUpdateDate DATETIME2(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    GDR_LastUpdateLogin SYSNAME NOT NULL DEFAULT(SUSER_NAME()),
+    FOREIGN KEY (GroupID) REFERENCES [security].Groups(GroupID),
+    PRIMARY KEY (GroupID, DatabaseName, DBRole)
+);
