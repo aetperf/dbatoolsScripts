@@ -15,7 +15,7 @@ $TempDbPath="D:\MSSQL"
 $BackupPath="S:\MSSQL"
 $UpdateSourcePath="C:\Jocker\MS SQL Server\MS SQL Server 2022"
 $AdminAccount="CORP\SQL_PROD_SYSADMIN"
-$SqlCollation="French_CI_AS"
+$SqlCollation="French_BIN2"
 $EngineCredential="CORP\sqlsvc"
 
 $Configuration=@{
