@@ -9,7 +9,7 @@ GO
 ALTER PROCEDURE [dba].[CheckIndexesDetails] 
     @SchemaParam SYSNAME = 'dba',
     @TableParam SYSNAME = 'IndexLandscape',
-    @SchemaTargetLike NVARCHAR(50) = '%'--,
+    @SchemaTargetLike NVARCHAR(50) = '%'
 AS
 BEGIN
         SELECT 
