@@ -3,9 +3,6 @@ DROP TABLE IF EXISTS [security].GroupMembers;
 DROP TABLE IF EXISTS [security].Groups;
 DROP TABLE IF EXISTS [security].Users;
 
-
-
-
 -- Table des groupes, avec une référence à un SuperGroup
 CREATE TABLE [security].Groups (
     GroupID INT IDENTITY(1,1) PRIMARY KEY,

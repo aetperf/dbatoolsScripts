@@ -1,4 +1,4 @@
-CREATE PROCEDURE sp_AddUser(@LoginName NVARCHAR(100))
+CREATE OR ALTER PROCEDURE [security].sp_AddUser(@LoginName NVARCHAR(100))
 AS
 BEGIN
 
