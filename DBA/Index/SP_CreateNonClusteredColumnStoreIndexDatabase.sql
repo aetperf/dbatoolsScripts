@@ -39,6 +39,7 @@ BEGIN
         t.is_ms_shipped = 0  -- Exclure les tables syst�me
         AND s.name LIKE @schemaNameLike  -- Filtrer par sch�ma (si n�cessaire, remplace '%' par le sch�ma)
         AND t.name LIKE @tableNameLike  -- Filtrer par nom de table (si besoin, remplace '%' par le pattern)
+        AND p.index_id=1
     GROUP BY 
         s.name, t.name
     HAVING

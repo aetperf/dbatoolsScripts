@@ -77,9 +77,9 @@ BEGIN
 					BEGIN
 						IF @truncateTableBeforeDrop=1
 							BEGIN
-								EXEC sp_execute @sqltruncate;
+								EXEC sp_executesql @sqltruncate;
 							END
-						EXEC sp_execute @sqldrop;
+						EXEC sp_executesql @sqldrop;
 					END
 				FETCH NEXT FROM indexCursor INTO @SchemaNameParam, @TableNameParam, @IndexNameParam, @RowCount;
 			END
