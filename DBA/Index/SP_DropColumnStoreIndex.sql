@@ -1,6 +1,6 @@
---EXEC [dbo].[DropColumnStoreIndex] @indexNameLike='NCCI%', @truncateTableBeforeDrop=1
 
-ALTER PROCEDURE [dbo].[DropColumnStoreIndex] 
+
+CREATE OR ALTER PROCEDURE [dbo].[DropColumnStoreIndex] 
 	@schemaNameLike NVARCHAR(100)='%',
 	@tableNameLike NVARCHAR(100)='%',
 	@indexNameLike NVARCHAR(100)='%',
