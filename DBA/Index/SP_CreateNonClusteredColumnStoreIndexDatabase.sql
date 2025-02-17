@@ -1,4 +1,4 @@
-EXEC dbo.GenerateDatabaseColumnstoreIndex @schemaNameLike='alert', @tableNameLike='Alert%', @fileGroup='INDEX_CI',@debug=1, @execute=1,@continue=0
+--EXEC dbo.GenerateDatabaseColumnstoreIndex @schemaNameLike='alert', @tableNameLike='Alert%', @fileGroup='INDEX_CI',@debug=1, @execute=1,@continue=0
 
 CREATE OR ALTER PROCEDURE dbo.GenerateDatabaseColumnstoreIndex
 	@schemaNameLike NVARCHAR(100)='%',		-- Instruction SQL dans le like pour le nom du sch�ma par d�faut '%'
