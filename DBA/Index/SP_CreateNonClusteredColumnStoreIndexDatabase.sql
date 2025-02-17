@@ -1,4 +1,4 @@
-
+EXEC dbo.GenerateDatabaseColumnstoreIndex @schemaNameLike='alert', @tableNameLike='Alert%', @fileGroup='INDEX_CI',@debug=1, @execute=1,@continue=0
 
 CREATE OR ALTER PROCEDURE dbo.GenerateDatabaseColumnstoreIndex
 	@schemaNameLike NVARCHAR(100)='%',		-- Instruction SQL dans le like pour le nom du sch�ma par d�faut '%'
@@ -10,14 +10,17 @@ CREATE OR ALTER PROCEDURE dbo.GenerateDatabaseColumnstoreIndex
 	@fileGroup NVARCHAR(100) = 'Primary',	--(Optionnel) Nom du groupe de fichier o� sera cr�� l'index
 	@force BIT = 0,							--(Optionnel) Si option activ�, suppresion et reconstruction de l'index
 	@execute BIT = 1,						--(Optionnel) Param�tre d'execution de l'ordre SQL par d�faut 1
-    @debug BIT = 1							--(Optionnel) Param�tre de debug par d�faut 1
+    @debug BIT = 1,							--(Optionnel) Param�tre de debug par d�faut 1
+	@continue BIT = 1						--(Optionnel) Paramètre pour continuer l'execution si l'on rencontre une erreur avec valeur par défaut de 1
+
 AS
 BEGIN
     DECLARE 
 	@SchemaNameParam NVARCHAR(128), 
 	@TableNameParam NVARCHAR(200), 
     @IndexNameWithTableName NVARCHAR(150),
-	@RowCount BIGINT;
+	@RowCount BIGINT,
+	@errorCode INT;
 
     
     
@@ -54,8 +57,24 @@ BEGIN
 
         PRINT 'Schema: ' + @SchemaNameParam + ', Table: ' + @TableNameParam + ', Row Count: ' + CAST(@RowCount AS NVARCHAR(10));
 
-		EXEC dbo.GenerateColumnstoreIndex @schemaName=@SchemaNameParam, @tableName=@TableNameParam, @indexName=@IndexNameWithTableName,
-		@orderClause=@orderClause, @fileGroup=@fileGroup, @force=@force, @execute=@execute, @debug=@debug
+		EXEC dbo.GenerateColumnstoreIndex 
+		@schemaName=@SchemaNameParam, 
+		@tableName=@TableNameParam, 
+		@indexName=@IndexNameWithTableName,
+		@orderClause=@orderClause, 
+		@fileGroup=@fileGroup, 
+		@force=@force, 
+		@execute=@execute, 
+		@debug=@debug,
+		@errorCode=@errorCode OUTPUT
+
+		IF @continue=0 and @errorCode=1
+			BEGIN
+				CLOSE TableCursor;
+				DEALLOCATE TableCursor;
+				RETURN;
+			END
+			
 
         FETCH NEXT FROM TableCursor INTO @SchemaNameParam, @TableNameParam,@RowCount;
     END
