@@ -3,7 +3,7 @@
 CREATE OR ALTER PROCEDURE dbo.GenerateDatabaseColumnstoreIndex
 	@schemaNameLike NVARCHAR(100)='%',		-- Instruction SQL dans le like pour le nom du sch�ma par d�faut '%'
     @tableNameLike NVARCHAR(100)='%',		-- Instruction SQL dans le like pour le nom de la table par d�faut '%'
-	@indexName NVARCHAR(100)='NCCI_I0',				--Nom de l'index
+	@indexName NVARCHAR(100)='<TableName>_NCCI_I0',				--Nom de l'index
 	@MinRow BIGINT=-1,						--Nombre minimum de ligne pour cr�er le non clustered columnstore index par d�faut -1
 	@MaxRow BIGINT=1000000000000,				--Nombre maximum de ligne pour cr�er le non clustered columnstore index par d�faut -1
 	@orderClause NVARCHAR(1000) = '',		--(Optionnel) Liste de colonnes pour trier le columnstore index sur les colonnes de la liste (Example : [col1],[col2]
@@ -16,7 +16,10 @@ BEGIN
     DECLARE 
 	@SchemaNameParam NVARCHAR(128), 
 	@TableNameParam NVARCHAR(200), 
+    @IndexNameWithTableName NVARCHAR(150),
 	@RowCount BIGINT;
+
+    
     
     DECLARE TableCursor CURSOR FOR
     SELECT 
@@ -47,9 +50,11 @@ BEGIN
 
     WHILE @@FETCH_STATUS = 0
     BEGIN
+        SET @IndexNameWithTableName = REPLACE(@indexName, '<TableName>', @TableNameParam);
+
         PRINT 'Schema: ' + @SchemaNameParam + ', Table: ' + @TableNameParam + ', Row Count: ' + CAST(@RowCount AS NVARCHAR(10));
 
-		EXEC dbo.GenerateColumnstoreIndex @schemaName=@SchemaNameParam, @tableName=@TableNameParam, @indexName=@indexName,
+		EXEC dbo.GenerateColumnstoreIndex @schemaName=@SchemaNameParam, @tableName=@TableNameParam, @indexName=@IndexNameWithTableName,
 		@orderClause=@orderClause, @fileGroup=@fileGroup, @force=@force, @execute=@execute, @debug=@debug
 
         FETCH NEXT FROM TableCursor INTO @SchemaNameParam, @TableNameParam,@RowCount;
