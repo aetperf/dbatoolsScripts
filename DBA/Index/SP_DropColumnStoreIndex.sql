@@ -1,15 +1,13 @@
-
-
 CREATE OR ALTER PROCEDURE [dbo].[DropColumnStoreIndex] 
-	@schemaNameLike NVARCHAR(100)='%',
-	@tableNameLike NVARCHAR(100)='%',
-	@indexNameLike NVARCHAR(100)='%',
-	@columnStoreIndexNC BIT = 1,
-	@columnStoreIndexC BIT = 1,
+	@SchemaNameLike NVARCHAR(100)='%',
+	@TableNameLike NVARCHAR(100)='%',
+	@IndexNameLike NVARCHAR(100)='%',
+	@ColumnStoreIndexNC BIT = 1,
+	@ColumnStoreIndexC BIT = 1,
 	--@indexWithAllColumn BIT=0,
-	@truncateTableBeforeDrop BIT=0,
-	@execute BIT=0,
-	@debug BIT=1
+	@TruncateTableBeforeDrop BIT=0,
+	@Execute BIT=0,
+	@Debug BIT=1
 AS
 BEGIN
 	DECLARE
@@ -17,8 +15,8 @@ BEGIN
 	@TableNameParam NVARCHAR(200), 
 	@IndexNameParam NVARCHAR(200),
 	@RowCount BIGINT,
-	@sqldrop NVARCHAR(MAX),
-	@sqltruncate NVARCHAR(MAX);
+	@Sqldrop NVARCHAR(MAX),
+	@Sqltruncate NVARCHAR(MAX);
 
 	CREATE TABLE #TableCursor(
 		Schema_Name sysname,
@@ -44,15 +42,15 @@ BEGIN
 		JOIN 
 			sys.columns c ON ic.column_id = c.column_id AND ic.object_id = c.object_id
 		WHERE 
-			s.name like @schemaNameLike
-			AND t.name LIKE @tableNameLike
+			s.name like @SchemaNameLike
+			AND t.name LIKE @TableNameLike
 			AND (i.type = CASE 
-				WHEN @columnStoreIndexNC=1 THEN 6
+				WHEN @ColumnStoreIndexNC=1 THEN 6
 				END
 			OR i.type = CASE 
-				WHEN @columnStoreIndexC=1 THEN 5
+				WHEN @ColumnStoreIndexC=1 THEN 5
 				END)
-			AND i.name like @indexNameLike
+			AND i.name like @IndexNameLike
 		GROUP BY 
 			i.name, t.name, s.name
 		--HAVING
@@ -70,27 +68,27 @@ BEGIN
 
 		WHILE @@FETCH_STATUS = 0
 			BEGIN
-				SET @sqldrop='DROP INDEX IF EXISTS '+QUOTENAME(@IndexNameParam)+' ON '+QUOTENAME(@SchemaNameParam)+'.'+QUOTENAME(@TableNameParam)+';';
-				SET @sqltruncate='TRUNCATE TABLE '+QUOTENAME(@SchemaNameParam)+'.'+QUOTENAME(@TableNameParam)+';';
+				SET @Sqldrop='DROP INDEX IF EXISTS '+QUOTENAME(@IndexNameParam)+' ON '+QUOTENAME(@SchemaNameParam)+'.'+QUOTENAME(@TableNameParam)+';';
+				SET @Sqltruncate='TRUNCATE TABLE '+QUOTENAME(@SchemaNameParam)+'.'+QUOTENAME(@TableNameParam)+';';
 				
-				IF @debug=1
+				IF @Debug=1
 					BEGIN
-					IF @truncateTableBeforeDrop=1
+					IF @TruncateTableBeforeDrop=1
 							BEGIN
 								RAISERROR('Truncating table index [%s].[%s]', 1, 1, @SchemaNameParam,@TableNameParam) WITH NOWAIT;
-								RAISERROR('SQL Statement : %s', 1, 1, @sqltruncate) WITH NOWAIT;
+								RAISERROR('SQL Statement : %s', 1, 1, @Sqltruncate) WITH NOWAIT;
 							END
 						
 							RAISERROR('Dropping index %s on [%s].[%s]', 1, 1, @IndexNameParam,@SchemaNameParam,@TableNameParam) WITH NOWAIT;
-							RAISERROR('SQL Statement : %s', 1, 1, @sqldrop) WITH NOWAIT;
+							RAISERROR('SQL Statement : %s', 1, 1, @Sqldrop) WITH NOWAIT;
 					END
-				IF @execute=1
+				IF @Execute=1
 					BEGIN
-						IF @truncateTableBeforeDrop=1
+						IF @TruncateTableBeforeDrop=1
 							BEGIN
-								EXEC sp_executesql @sqltruncate;
+								EXEC sp_executesql @Sqltruncate;
 							END
-						EXEC sp_executesql @sqldrop;
+						EXEC sp_executesql @Sqldrop;
 					END
 				FETCH NEXT FROM indexCursor INTO @SchemaNameParam, @TableNameParam, @IndexNameParam, @RowCount;
 			END
@@ -100,5 +98,3 @@ BEGIN
 		DEALLOCATE indexCursor;
 		DROP TABLE #TableCursor
 END;
-	
-
