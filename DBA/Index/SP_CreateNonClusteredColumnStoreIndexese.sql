@@ -1,4 +1,4 @@
-CREATE OR ALTER PROCEDURE dbo.GenerateDatabaseColumnstoreIndex
+CREATE OR ALTER PROCEDURE dbo.CreateColumnstoreIndexes
 	@schemaNameLike NVARCHAR(100)='%',		-- Instruction SQL dans le like pour le nom du schéma par défaut '%'
     @tableNameLike NVARCHAR(100)='%',		-- Instruction SQL dans le like pour le nom de la table par défaut '%'
 	@indexName NVARCHAR(100)='<TableName>_NCCI_I0',				--Nom de l'index
@@ -20,9 +20,13 @@ BEGIN
 	@RowCount BIGINT,
 	@errorCode INT;
 
+    CREATE TABLE #TableCursor (
+        Schema_Name sysname,
+        Table_Name sysname,
+        Row_Count BIGINT
+    );
     
-    
-    DECLARE TableCursor CURSOR FOR
+    INSERT INTO #TableCursor (Schema_Name, Table_Name, Row_Count)
     SELECT 
         s.name AS Schema_Name,
         t.name AS Table_Name, 
@@ -46,6 +50,12 @@ BEGIN
     ORDER BY 
         Schema_Name, Table_Name;
 
+	DECLARE TableCursor CURSOR FOR
+	SELECT 
+        Schema_Name, Table_Name, Row_Count
+    FROM 
+        #TableCursor
+
    
     OPEN TableCursor;
 
@@ -57,7 +67,7 @@ BEGIN
 
         PRINT 'Schema: ' + @SchemaNameParam + ', Table: ' + @TableNameParam + ', Row Count: ' + CAST(@RowCount AS NVARCHAR(10));
 
-		EXEC dbo.GenerateColumnstoreIndex 
+		EXEC dbo.CreateColumnstoreIndex 
 		@schemaName=@SchemaNameParam, 
 		@tableName=@TableNameParam, 
 		@indexName=@IndexNameWithTableName,
@@ -72,6 +82,7 @@ BEGIN
 			BEGIN
 				CLOSE TableCursor;
 				DEALLOCATE TableCursor;
+				DROP TABLE #TableCursor;
 				RETURN;
 			END
 			
@@ -81,4 +92,5 @@ BEGIN
 
     CLOSE TableCursor;
     DEALLOCATE TableCursor;
+	DROP TABLE #TableCursor;
 END;

@@ -20,8 +20,15 @@ BEGIN
 	@sqldrop NVARCHAR(MAX),
 	@sqltruncate NVARCHAR(MAX);
 
-	DECLARE indexCursor CURSOR FOR
-		SELECT 
+	CREATE TABLE #TableCursor(
+		Schema_Name sysname,
+		Table_Name sysname,
+		Index_Name sysname,
+		Column_Count INT,
+	)
+
+	INSERT INTO #TableCursor(Schema_Name,Table_Name,Index_Name,Column_Count)
+	SELECT 
 			s.name AS Schema_Name,
 			t.name AS Table_Name,
 			i.name AS Index_Name,
@@ -52,6 +59,10 @@ BEGIN
 		--	Column_Count = CASE WHEN @indexWithAllColumn=1 THEN (SELECT COUNT(*) AS Column_Count FROM INFORMATION_SCHEMA.COLUMNS c JOIN INFORMATION_SCHEMA.TABLES t ON c.TABLE_NAME = t.TABLE_NAME WHERE t. = @tableName AND (c.CHARACTER_MAXIMUM_LENGTH != -1 OR c.CHARACTER_MAXIMUM_LENGTH IS NULL) )
 		ORDER BY 
 			i.name;
+
+		DECLARE indexCursor CURSOR FOR
+		SELECT Schema_Name,Table_Name,Index_Name,Column_Count
+		FROM #TableCursor;
 
 		OPEN indexCursor;
 
@@ -87,6 +98,7 @@ BEGIN
 
 		CLOSE indexCursor;
 		DEALLOCATE indexCursor;
+		DROP TABLE #TableCursor
 END;
 	
 
