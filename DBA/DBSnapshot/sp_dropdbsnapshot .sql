@@ -31,11 +31,11 @@ BEGIN
 				RETURN
 			END
     END
-
+	
     -- Si on demande de forcer, mettre la base en mode SINGLE_USER et déconnecter les utilisateurs
     IF @force = 1 AND @err = 0
     BEGIN
-        BEGIN TRY
+        --BEGIN TRY
             -- Trouver toutes les sessions utilisant le snapshot
             DECLARE session_cursor CURSOR FOR
             SELECT session_id
@@ -57,7 +57,7 @@ BEGIN
 
             CLOSE session_cursor;
             DEALLOCATE session_cursor;
-        END TRY
+        /*END TRY
         BEGIN CATCH
             SET @err = 1;
             IF @continueOnError = 0 
@@ -71,7 +71,7 @@ BEGIN
 				IF @debug = 1
 					 RAISERROR('Erreur lors de la tentative de suppression des sessions', 1, 1) WITH NOWAIT;
 			END
-        END CATCH
+        END CATCH*/
     END
 
     -- Si tout est ok, on supprime le snapshot
@@ -84,8 +84,6 @@ BEGIN
         END TRY
         BEGIN CATCH
             SET @err = 1;
-           
-				RAISERROR('Erreur lors de la suppression du database snapshot %s', 1, 1, @dbsnapshotname) WITH NOWAIT;
             IF @continueOnError = 0 
             BEGIN
                 RAISERROR('Erreur lors de la suppression du snapshot', 16, 1);
@@ -98,7 +96,7 @@ BEGIN
 			END
 		END CATCH
     END
-
+	/*
     -- Retourner 0 si on continue malgré l'erreur ou pas d'erreur
     IF @err = 0 OR @continueOnError = 1
     BEGIN
@@ -109,6 +107,6 @@ BEGIN
     BEGIN
         PRINT 'Opération échouée.';
         RETURN 1;
-    END
+    END*/
 END
 GO
