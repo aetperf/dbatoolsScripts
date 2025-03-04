@@ -14,7 +14,7 @@ BEGIN
     IF NOT EXISTS (
         SELECT 1 
         FROM sys.databases 
-        WHERE name = @dbsnapshotname 
+        WHERE QUOTENAME(name) = QUOTENAME(@dbsnapshotname) 
 	AND source_database_id is not null -- Pour etre sur que la base passée en paramètre est bien un snapshot et pas une base réelle
     )
     BEGIN
@@ -81,7 +81,7 @@ BEGIN
         BEGIN TRY
 			IF @debug = 1
 				RAISERROR('Suppression du database snapshot %s', 1, 1, @dbsnapshotname) WITH NOWAIT;
-            EXEC('DROP DATABASE ' + @dbsnapshotname);
+            EXEC('DROP DATABASE ' + QUOTENAME(@dbsnapshotname));
         END TRY
         BEGIN CATCH
             SET @err = 1;
