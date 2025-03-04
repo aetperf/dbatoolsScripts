@@ -14,7 +14,8 @@ BEGIN
     IF NOT EXISTS (
         SELECT 1 
         FROM sys.databases 
-        WHERE name = @dbsnapshotname
+        WHERE name = @dbsnapshotname 
+	AND source_database_id is not null -- Pour etre sur que la base passée en paramètre est bien un snapshot et pas une base réelle
     )
     BEGIN
 		IF @continueOnError=1
