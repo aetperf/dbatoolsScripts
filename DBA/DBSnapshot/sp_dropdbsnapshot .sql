@@ -32,7 +32,7 @@ BEGIN
     END
 
     -- Si on demande de forcer, mettre la base en mode SINGLE_USER et déconnecter les utilisateurs
-    IF @force = 1 AND @err = 0
+    /*IF @force = 1 AND @err = 0
     BEGIN
         BEGIN TRY
 			SET @sql = 'USE MASTER GO ALTER DATABASE '+QUOTENAME(@dbsnapshotname)+' SET SINGLE_USER GO;'
@@ -52,7 +52,7 @@ BEGIN
 				RAISERROR('Erreur lors du passage en mode SINGLE_USER', 1, 1) WITH NOWAIT;
 			END
         END CATCH
-    END
+    END*/
 
     -- Si tout est ok, supprimer le snapshot
     IF @err = 0
