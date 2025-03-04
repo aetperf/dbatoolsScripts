@@ -8,6 +8,7 @@ AS
 BEGIN
     DECLARE @err INT = 0;
 	DECLARE @sql VARCHAR(MAX);
+	DECLARE @session_id INT;
 
     -- Vérifier si le snapshot existe
     IF NOT EXISTS (
@@ -32,29 +33,48 @@ BEGIN
     END
 
     -- Si on demande de forcer, mettre la base en mode SINGLE_USER et déconnecter les utilisateurs
-    /*IF @force = 1 AND @err = 0
+    IF @force = 1 AND @err = 0
     BEGIN
         BEGIN TRY
-			SET @sql = 'USE MASTER GO ALTER DATABASE '+QUOTENAME(@dbsnapshotname)+' SET SINGLE_USER GO;'
-			IF @debug = 1
-				RAISERROR('Passage de la snapshot en SINGLE_USER : %s', 1, 1, @sql) WITH NOWAIT;
-            EXEC sp_executesql @sql;
+            -- Trouver toutes les sessions utilisant le snapshot
+            DECLARE session_cursor CURSOR FOR
+            SELECT session_id
+            FROM sys.dm_exec_sessions
+            WHERE database_id = DB_ID(@dbsnapshotname);
+
+            OPEN session_cursor;
+            FETCH NEXT FROM session_cursor INTO @session_id;
+
+            WHILE @@FETCH_STATUS = 0
+            BEGIN
+                -- Tuer la session
+                SET @sql = 'KILL ' + CAST(@session_id AS NVARCHAR(10));
+                EXEC sp_executesql @sql;
+                IF @debug=1
+					RAISERROR('Suppression de la session %s, SQL : %s', 1, 1, @session_id,@sql) WITH NOWAIT;
+                FETCH NEXT FROM session_cursor INTO @session_id;
+            END
+
+            CLOSE session_cursor;
+            DEALLOCATE session_cursor;
         END TRY
         BEGIN CATCH
             SET @err = 1;
             IF @continueOnError = 0 
             BEGIN
-                RAISERROR('Erreur lors du passage en mode SINGLE_USER', 16, 1) WITH NOWAIT;
+				IF @debug=1
+					RAISERROR('Erreur lors de la tentative de tuer les sessions', 16, 1) WITH NOWAIT;
                 RETURN;
             END
-			ELSE
+			ELSE 
 			BEGIN
-				RAISERROR('Erreur lors du passage en mode SINGLE_USER', 1, 1) WITH NOWAIT;
+				IF @debug = 1
+					 RAISERROR('Erreur lors de la tentative de suppression des sessions', 1, 1) WITH NOWAIT;
 			END
         END CATCH
-    END*/
+    END
 
-    -- Si tout est ok, supprimer le snapshot
+    -- Si tout est ok, on supprime le snapshot
     IF @err = 0
     BEGIN
         BEGIN TRY
