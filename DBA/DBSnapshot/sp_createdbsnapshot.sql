@@ -14,7 +14,7 @@ BEGIN
     DECLARE @sql NVARCHAR(MAX);
 
     -- Vérification de l'existence de la base de données source (@snapshotof)
-    IF EXISTS (
+    IF NOT EXISTS (
         SELECT 1 
         FROM sys.databases 
         WHERE name = @snapshotof
