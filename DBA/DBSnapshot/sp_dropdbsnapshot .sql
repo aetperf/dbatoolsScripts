@@ -4,6 +4,7 @@ CREATE OR ALTER PROCEDURE sp_dropdbsnapshot
     @force bit = 0, 
     @debug bit = 1, 
     @continueOnError bit = 1
+WITH EXECUTE AS OWNER
 AS
 BEGIN
     DECLARE @err INT = 0;
