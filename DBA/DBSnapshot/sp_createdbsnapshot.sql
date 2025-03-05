@@ -5,6 +5,7 @@ CREATE OR ALTER PROCEDURE sp_createdbsnapshot
     @execute           BIT = 0,               -- 1 => exécute la création du snapshot
     @debug             BIT = 1,               -- 1 => affiche des messages de débogage
     @continueOnError   BIT = 0                -- 1 => continue malgré les erreurs (erreurs « légères »)
+WITH EXECUTE AS OWNER
 AS
 BEGIN
     SET NOCOUNT ON;
