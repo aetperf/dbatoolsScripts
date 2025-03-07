@@ -56,7 +56,7 @@ BEGIN
             IF @execute=1
 				EXEC sp_executesql @sql;
             IF @debug=1
-				RAISERROR('kill session %d', 1, 1, @session_id) WITH NOWAIT;
+				RAISERROR('kill session %s', 1, 1, @session_id) WITH NOWAIT;
             FETCH NEXT FROM session_cursor INTO @session_id;
         END
         CLOSE session_cursor;
