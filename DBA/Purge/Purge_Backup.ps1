@@ -1,26 +1,30 @@
 <#
     .SYNOPSIS
-        Recursively delete files in a specified directory older than a given number of hours based on file extension.
+        Recursively delete files in a specified directory based on their age in hours and file pattern.
     .DESCRIPTION
-        Objective: This script allows you to remove files from a specified directory (including subdirectories) that are older than a certain number of hours. 
-        You can specify the file extension for filtering the files to be deleted. The script also supports a dry-run mode with the -WhatIf switch 
-        to preview the files that would be deleted without actually removing them.
+        Objective: This script allows you to remove files from a specified directory (including subdirectories) based on their last modified time. 
+        You can specify the file pattern and the time range for the files to be deleted. It supports deleting files older than a certain number 
+        of hours (using `purgeHoursLater`) or files that were modified between a specified time range (using `purgeHoursLater` and `purgeHoursEarlier` together).
+        The script also supports a dry-run mode with the `-WhatIf` switch to preview the files that would be deleted without actually removing them.
 
         The script will:
         - Traverse the directory and its subdirectories recursively.
-        - Filter files by the specified extension.
-        - Delete files older than the specified number of hours (unless the -WhatIf flag is set).
+        - Filter files by the specified pattern.
+        - Delete files that meet the conditions based on the specified `purgeHoursLater` or `purgeHoursEarlier`.
         
         The output will be a list of deleted files or a preview of which files would be deleted.
 
     .PARAMETER directory
         The directory containing the files to be purged. This directory will be searched recursively.
 
-    .PARAMETER fileExtension
-        The file extension to filter the files to be deleted (e.g., ".log", ".txt").
+    .PARAMETER filePattern
+        The file pattern to filter the files to be deleted (e.g., "*.log", "backup_*", "*.txt").
 
-    .PARAMETER purgeHours
-        The number of hours old a file must be to be eligible for deletion.
+    .PARAMETER purgeHoursLater
+        The number of hours old a file must be to be eligible for deletion. Files older than this will be deleted.
+
+    .PARAMETER purgeHoursEarlier
+        The number of hours ago up to the current time to filter files to be deleted. Files modified between these hours will be deleted.
 
     .PARAMETER whatIf
         If specified, the script will not delete any files but will print the paths of the files that would be deleted.
@@ -28,35 +32,31 @@
     .NOTES
         Tags: File Cleanup, Purge, File Management
         Author: Pierre-Antoine Collet
-        Website: 
-        Copyright: (c) 2025 by Pierre-Antoine Collet, licensed under MIT
+        Website: https://www.architecture-performance.fr/
+        Copyright: (c) 2025 by Your Name, licensed under MIT
         License: MIT https://opensource.org/licenses/MIT
         
     .LINK
         https://www.architecture-performance.fr/
 
     .EXAMPLE
-        .\Purge_Backup.ps1 -directory "C:\Logs" -fileExtension ".log" -purgeHours 48
-        This will delete all .log files older than 48 hours in the C:\Logs directory and its subdirectories.
+        .\Purge_Backup.ps1 -directory "D:\MSSQL" -filePattern "*.bak" -purgeHoursLater 48
+        This will delete all .bak files older than 48 hours in the D:\MSSQL directory and its subdirectories.
 
     .EXAMPLE
-        .\Purge_Backup.ps1 -directory "C:\Logs" -fileExtension ".log" -purgeHours 48 -WhatIf
-        This will display the files that would be deleted (but will not delete them), filtering by .log extension and older than 48 hours.
+        .\Purge_Backup.ps1 -directory "D:\MSSQL" -filePattern "*.bak" -purgeHoursLater 48 -WhatIf
+        This will display the files that would be deleted (but will not delete them), filtering by .bak extension and older than 48 hours.
 
     .EXAMPLE
-        .\Purge_Backup.ps1 -directory "C:\Logs" -fileExtension ".txt" -purgeHours 72
-        This will delete all .txt files older than 72 hours in the C:\Logs directory and its subdirectories.
-
-    .EXAMPLE
-        .\Purge_Backup.ps1 -directory "C:\Logs" -fileExtension ".log" -purgeHours 24 -WhatIf
-        This will preview (but not delete) all .log files that are older than 24 hours in the C:\Logs directory and its subdirectories.
+        .\Purge_Backup.ps1 -directory "D:\MSSQL" -filePattern "*.bak" -purgeHoursEarlier 72 -purgeHoursLater 24
+        This will delete all .bak files that were modified between 24 and 72 hours ago in the C:\Logs directory and its subdirectories.
 #>
-
 
 param(
     [Parameter(Mandatory=$true)][string]$directory,
-    [Parameter(Mandatory=$true)][string]$fileExtension,
-    [Parameter(Mandatory=$true)][int]$purgeHours,
+    [Parameter(Mandatory=$true)][string]$filePattern,
+    [int]$purgeHoursLater,
+    [int]$purgeHoursEarlier,
     [switch]$whatIf
 )
 
@@ -66,20 +66,61 @@ if (-Not (Test-Path -Path $directory -PathType Container)) {
     exit
 }
 
-# Calculate the cutoff date by subtracting the specified number of hours from the current time
-$purgeDate = (Get-Date).AddHours(-$purgeHours)
+# Get the current time
+$currentTime = Get-Date
+
+# If purgeHoursLater is specified, calculate the cutoff for older files
+if ($purgeHoursLater) {
+    $purgeDateLater = $currentTime.AddHours(-$purgeHoursLater)
+}
+
+# If purgeHoursEarlier is specified, calculate the cutoff for files within the time window
+if ($purgeHoursEarlier) {
+    $purgeDateEarlier = $currentTime.AddHours(-$purgeHoursEarlier)
+}
 
 # Get all the files in the directory and subdirectories
-Get-ChildItem -Path $directory -Recurse -File -Filter "*$fileExtension" | ForEach-Object {
-    # Check if the file's last modified time is older than the purge date
-    if ($_.LastWriteTime -lt $purgeDate) {
+Get-ChildItem -Path $directory -Recurse -File -Filter $filePattern | ForEach-Object {
+    # Logic for files between purgeHoursLater and purgeHoursEarlier
+    if($purgeHoursLater -and $purgeHoursEarlier){
+        if($_.LastWriteTime -lt $purgeDateLater -and $_.LastWriteTime -gt $purgeDateEarlier){
+            if ($whatIf) {
+                Write-Host "Would delete (between $purgeHoursEarlier and $purgeHoursLater hours): $($_.FullName)"
+            }
+            else {
+                try {
+                    Remove-Item -Path $_.FullName -Force
+                    Write-Host "Deleted: $($_.FullName)"
+                }
+                catch {
+                    Write-Host "Error while deleting $($_.FullName): $_"
+                }
+            }
+        }
+    }
+    # Logic for files older than purgeHoursLater
+    elseif ($purgeHoursLater -and -not $purgeHoursEarlier -and $_.LastWriteTime -lt $purgeDateLater) {
         if ($whatIf) {
-            # If -WhatIf is specified, just print the files that would be deleted
-            Write-Host "Would delete: $($_.FullName)"
+            Write-Host "Would delete (older than $purgeHoursLater hours): $($_.FullName)"
         }
         else {
             try {
-                # If -WhatIf is not specified, delete the file
+                Remove-Item -Path $_.FullName -Force
+                Write-Host "Deleted: $($_.FullName)"
+            }
+            catch {
+                Write-Host "Error while deleting $($_.FullName): $_"
+            }
+        }
+    }
+
+    # Logic for files younger than purgeHoursEarlier (if only purgeHoursEarlier is specified)
+    elseif ($purgeHoursEarlier -and -not $purgeHoursLater -and $_.LastWriteTime -gt $purgeDateEarlier) {
+        if ($whatIf) {
+            Write-Host "Would delete (younger than $purgeHoursEarlier hours): $($_.FullName)"
+        }
+        else {
+            try {
                 Remove-Item -Path $_.FullName -Force
                 Write-Host "Deleted: $($_.FullName)"
             }
@@ -89,4 +130,4 @@ Get-ChildItem -Path $directory -Recurse -File -Filter "*$fileExtension" | ForEac
         }
     }
     
-}
+} 
