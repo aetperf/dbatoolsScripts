@@ -40,16 +40,16 @@
         https://www.architecture-performance.fr/
 
     .EXAMPLE
-        .\Purge_Backup.ps1 -directory "C:\Logs" -filePattern "*.log" -purgeHoursLater 48
-        This will delete all .log files older than 48 hours in the C:\Logs directory and its subdirectories.
+        .\Purge_Backup.ps1 -directory "D:\MSSQL" -filePattern "*.bak" -purgeHoursLater 48
+        This will delete all .bak files older than 48 hours in the D:\MSSQL directory and its subdirectories.
 
     .EXAMPLE
-        .\Purge_Backup.ps1 -directory "C:\Logs" -filePattern "*.log" -purgeHoursLater 48 -WhatIf
-        This will display the files that would be deleted (but will not delete them), filtering by .log extension and older than 48 hours.
+        .\Purge_Backup.ps1 -directory "D:\MSSQL" -filePattern "*.bak" -purgeHoursLater 48 -WhatIf
+        This will display the files that would be deleted (but will not delete them), filtering by .bak extension and older than 48 hours.
 
     .EXAMPLE
-        .\Purge_Backup.ps1 -directory "C:\Logs" -filePattern "*.txt" -purgeHoursEarlier 72 -purgeHoursLater 24
-        This will delete all .txt files that were modified between 24 and 72 hours ago in the C:\Logs directory and its subdirectories.
+        .\Purge_Backup.ps1 -directory "D:\MSSQL" -filePattern "*.bak" -purgeHoursEarlier 72 -purgeHoursLater 24
+        This will delete all .bak files that were modified between 24 and 72 hours ago in the C:\Logs directory and its subdirectories.
 #>
 
 param(
