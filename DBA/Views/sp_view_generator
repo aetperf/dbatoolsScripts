@@ -1,0 +1,61 @@
+CREATE OR ALTER PROCEDURE dbo.sp_view_generator
+    @SourceDatabase SYSNAME,
+    @SourceSchema SYSNAME,
+    @TargetSchema SYSNAME,
+    @IncludePattern NVARCHAR(255) = NULL,
+    @ExcludePattern NVARCHAR(255) = NULL
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    DECLARE @TableName SYSNAME;
+    DECLARE @ColumnList NVARCHAR(MAX);
+    DECLARE @SQL NVARCHAR(MAX);
+    DECLARE @CursorSQL NVARCHAR(MAX);
+
+    -- Building the dynamic cursor query
+    SET @CursorSQL = N'
+        DECLARE TableCursor CURSOR FOR
+        SELECT TABLE_NAME
+        FROM ' + QUOTENAME(@SourceDatabase) + '.INFORMATION_SCHEMA.TABLES
+        WHERE TABLE_SCHEMA = @SourceSchema
+            AND TABLE_TYPE = ''BASE TABLE''
+            AND (@IncludePattern IS NULL OR TABLE_NAME LIKE @IncludePattern)
+            AND (@ExcludePattern IS NULL OR TABLE_NAME NOT LIKE @ExcludePattern);
+
+        OPEN TableCursor;
+
+        FETCH NEXT FROM TableCursor INTO @TableName;
+
+        WHILE @@FETCH_STATUS = 0
+        BEGIN
+            -- Building the query to get the column list for the view definition and select statement
+            SELECT @ColumnList = STRING_AGG(QUOTENAME(COLUMN_NAME), '', '')
+            FROM ' + QUOTENAME(@SourceDatabase) + '.INFORMATION_SCHEMA.COLUMNS
+            WHERE TABLE_SCHEMA = @SourceSchema
+                AND TABLE_NAME = @TableName;
+
+            -- Building the CREATE OR ALTER VIEW query
+            SET @SQL = N''CREATE OR ALTER VIEW '' + QUOTENAME(@TargetSchema) + ''.'' + QUOTENAME(@TableName) + '' AS SELECT '' + @ColumnList + '' FROM '' + QUOTENAME(@SourceDatabase) + ''.'' + QUOTENAME(@SourceSchema) + ''.'' + QUOTENAME(@TableName) + '';'';
+
+            BEGIN TRY
+                EXEC sp_executesql @SQL;
+                PRINT ''View '' + QUOTENAME(@TargetSchema) + ''.'' + QUOTENAME(@TableName) + '' created successfully.'';
+            END TRY
+            BEGIN CATCH
+                PRINT ''Error creating view '' + QUOTENAME(@TargetSchema) + ''.'' + QUOTENAME(@TableName) + '': '' + ERROR_MESSAGE();
+            END CATCH
+
+            FETCH NEXT FROM TableCursor INTO @TableName;
+        END
+
+        CLOSE TableCursor;
+        DEALLOCATE TableCursor;';
+
+    -- Executing the dynamic cursor
+    EXEC sp_executesql @CursorSQL, N'@SourceSchema SYSNAME, @IncludePattern NVARCHAR(255), @ExcludePattern NVARCHAR(255), @TableName SYSNAME OUTPUT, @ColumnList NVARCHAR(MAX) OUTPUT, @SQL NVARCHAR(MAX) , @TargetSchema SYSNAME, @SourceDatabase SYSNAME',
+        @SourceSchema = @SourceSchema, @IncludePattern = @IncludePattern, @ExcludePattern = @ExcludePattern, @TableName = @TableName OUTPUT, @ColumnList = @ColumnList OUTPUT, @SQL = @SQL, @TargetSchema = @TargetSchema, @SourceDatabase = @SourceDatabase;
+
+    SET NOCOUNT OFF;
+END;
+GO
