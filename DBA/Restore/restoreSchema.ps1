@@ -45,7 +45,8 @@ BEGIN
         SourceDB NVARCHAR(255),
         TargetDB NVARCHAR(255),
         SchemaName NVARCHAR(255),
-        ErrorCode BIT
+        ErrorCode BIT,
+        Message NVARCHAR(MAX)
     );
 END
 "@
@@ -113,14 +114,156 @@ $targetProcedures = Invoke-DbaQuery -SqlInstance $SqlInstance -Database $TargetD
 "
 
 #############################################################################################
+## CHECK CROSS SCHEMA OBJECT
+#############################################################################################
+
+# Get Table which are not in the source 
+$tablesToDelete = $targetTables | Where-Object { $_.TABLE_NAME -notin $sourceTables.TABLE_NAME }
+$viewsToDelete = $targetViews | Where-Object { $_.TABLE_NAME -notin $sourceViews.TABLE_NAME }
+
+
+$objectsToDelete = @(
+    @($tablesToDelete) + @($viewsToDelete) | ForEach-Object {
+        "$SchemaName.$($_.TABLE_NAME)"
+    }
+)
+
+$dependencies = Invoke-DbaQuery -SqlInstance $SqlInstance -Database $TargetDB -Query @"
+SELECT distinct
+    OBJECT_SCHEMA_NAME(referencing_id) + '.' + OBJECT_NAME(referencing_id) AS Referencer,
+    OBJECT_SCHEMA_NAME(referenced_id) + '.' + OBJECT_NAME(referenced_id) AS Referenced,
+    OBJECT_SCHEMA_NAME(referencing_id) AS ReferencerSchema,
+    OBJECT_NAME(referencing_id) AS ReferencerObject,
+    OBJECT_NAME(referenced_id) AS ReferencedObject
+FROM sys.sql_expression_dependencies
+WHERE referencing_id IS NOT NULL AND referenced_id IS NOT NULL
+"@
+
+$externalViewsUsingOurObjects = $dependencies | Where-Object {
+    ($_.Referenced -in $objectsToDelete) -and
+    ($_.ReferencerSchema -ne $SchemaName) -and
+    ($_.Referencer -ne $_.Referenced) -and  
+    ($_ -ne $null)
+}
+
+
+if (($externalViewsUsingOurObjects | Select-Object -ExpandProperty Referencer -Unique).Count -gt 0) {
+    $ErrorCode = 1
+    $ErrorMessage = "External views of schema reference objects that you want to delete"
+
+    $RestoreEndDatetime = $now.ToString("yyyy-MM-dd HH:mm:ss")
+    #$externalViewsUsingOurObjects | Select-Object Referencer, Referenced | Sort-Object Referenced | Format-Table
+
+    $logQuery = "INSERT INTO dbo.RestoreSchemaLog (RestoreId,RestoreStartDatetime,RestoreEndDatetime,SourceDB,TargetDB,SchemaName,ErrorCode,Message)
+    VALUES ($RestoreId,'$RestoreStartDatetime','$RestoreEndDatetime','$SourceDB','$TargetDB','$SchemaName',$ErrorCode,'$ErrorMessage')"
+
+    Invoke-DbaQuery -SqlInstance $LogInstance -Database $LogDatabase -Query $logQuery
+    
+    if($DebugParam){
+        Write-Error $ErrorMessage
+    }
+    return
+} 
+
+#############################################################################################
+## SORT AND DROP VIEW
+#############################################################################################
+if($DebugParam){
+    Write-Host "DROP ORPHAN VIEW"
+}
+
+$viewsToDropFullNames = $viewsToDelete | ForEach-Object {
+    "$SchemaName.$($_.TABLE_NAME)"
+}
+
+$viewDeps = Invoke-DbaQuery -SqlInstance $SqlInstance -Database $TargetDB -Query @"
+SELECT 
+    OBJECT_SCHEMA_NAME(referencing_id) + '.' + OBJECT_NAME(referencing_id) AS Referencer,
+    OBJECT_SCHEMA_NAME(referenced_id) + '.' + OBJECT_NAME(referenced_id) AS Referenced
+FROM sys.sql_expression_dependencies
+WHERE 
+    OBJECTPROPERTY(referencing_id, 'IsView') = 1
+    AND OBJECTPROPERTY(referenced_id, 'IsView') = 1
+"@
+
+# Filter only the internal dependencies between views to remove
+$internalDeps = $viewDeps | Where-Object {
+    ($_.Referencer -in $viewsToDropFullNames) -and
+    ($_.Referenced -in $viewsToDropFullNames)
+}
+
+$graph = @{}
+$inDegree = @{}
+
+foreach ($view in $viewsToDropFullNames) {
+    $graph[$view] = @()
+    $inDegree[$view] = 0
+}
+
+foreach ($dep in $internalDeps) {
+    $graph[$dep.Referenced] += $dep.Referencer
+    $inDegree[$dep.Referencer]++
+}
+
+$queue = New-Object System.Collections.Generic.Queue[string]
+$inDegree.Keys | Where-Object { $inDegree[$_] -eq 0 } | ForEach-Object { $queue.Enqueue($_) }
+
+$sorted = @()
+
+while ($queue.Count -gt 0) {
+    $current = $queue.Dequeue()
+    $sorted += $current
+
+    foreach ($dependent in $graph[$current]) {
+        $inDegree[$dependent]--
+        if ($inDegree[$dependent] -eq 0) {
+            $queue.Enqueue($dependent)
+        }
+    }
+}
+
+# Check
+if ($sorted.Count -ne $viewsToDropFullNames.Count) {
+    Write-Error "Cycle détecté dans les dépendances entre vues."
+    return
+}
+
+# Reverse for deletion (from the most dependent to the least dependent)
+$sorted = [System.Collections.ArrayList]::new($sorted)
+$sorted.Reverse()
+
+
+if (!$WhatIf) {
+    $sorted | ForEach-Object {
+        $viewName=$_
+        $dropViewQuery="DROP VIEW $_"
+
+        try {
+            Invoke-DbaQuery -SqlInstance $SqlInstance -Database $TargetDB -Query $dropViewQuery -EnableException
+
+            $logQuery = "
+            INSERT INTO dbo.RestoreSchemaLogDetail (RestoreId, Step, ObjectType, ObjectSchema, ObjectName, Action, Command, ErrorCode, Message, LogDate) 
+            VALUES ($RestoreId, 'DROP ORPHAN VIEW', 'VIEW', '$SchemaName', '$viewName', 'DROP', '$($dropViewQuery.Replace("'", "''"))', 0, 'Success', GETDATE())
+            "
+            Invoke-DbaQuery -SqlInstance $LogInstance -Database $LogDatabase -Query $logQuery
+        }
+        catch {
+            $errorMsg = $_.Exception.Message.Replace("'", "''")
+            $logQuery = "INSERT INTO dbo.RestoreSchemaLogDetail(RestoreId, Step, ObjectType, ObjectSchema, ObjectName, Action, Command, ErrorCode, Message, LogDate) 
+            VALUES ($RestoreId, 'DROP ORPHAN VIEW', 'VIEW', '$SchemaName', '$viewName', 'DROP', '$($dropViewQuery.Replace("'", "''"))', 1, '$errorMsg', GETDATE())"
+            Invoke-DbaQuery -SqlInstance $LogInstance -Database $LogDatabase -Query $logQuery
+            $ErrorCode = 1
+        }
+    }
+
+}
+
+#############################################################################################
 ## DELETE ORPHAN TABLE
 #############################################################################################
 if($DebugParam){
     Write-Host "DROP FOREIGN KEY OF ORPHAN TABLE"
 }
-
-# Get Table which are not in the source 
-$tablesToDelete = $targetTables | Where-Object { $_.TABLE_NAME -notin $sourceTables.TABLE_NAME }
 
 # Delete foreign Key for each table not in the source
 foreach ($table in $tablesToDelete) {
@@ -205,46 +348,6 @@ foreach ($table in $tablesToDelete) {
     }
 }
 
-
-#############################################################################################
-## DELETE ORPHAN VIEWS
-#############################################################################################
-if($DebugParam){
-    Write-Host "DROP ORPHAN VIEW"
-}
-
-# Get Views which are not in the source 
-$viewsToDelete = $targetViews | Where-Object { $_.TABLE_NAME -notin $sourceViews.TABLE_NAME }
-
-# Drop View which are not in the source
-foreach ($view in $viewsToDelete) {
-    $viewName = $view.TABLE_NAME
-    $fullView = "[$SchemaName].[$viewName]"
-    $dropViewQuery = "DROP VIEW $fullView"
-
-    if ($DebugParam) {
-        Write-Host $dropViewQuery
-    }
-
-    if (!$WhatIf) {
-        try {
-            Invoke-DbaQuery -SqlInstance $SqlInstance -Database $TargetDB -Query $dropViewQuery -EnableException
-
-            $logQuery = "
-            INSERT INTO dbo.RestoreSchemaLogDetail (RestoreId, Step, ObjectType, ObjectSchema, ObjectName, Action, Command, ErrorCode, Message, LogDate) 
-            VALUES ($RestoreId, 'DROP ORPHAN VIEW', 'VIEW', '$SchemaName', '$viewName', 'DROP', '$($dropViewQuery.Replace("'", "''"))', 0, 'Success', GETDATE())
-            "
-            Invoke-DbaQuery -SqlInstance $LogInstance -Database $LogDatabase -Query $logQuery
-        }
-        catch {
-            $errorMsg = $_.Exception.Message.Replace("'", "''")
-            $logQuery = "INSERT INTO dbo.RestoreSchemaLogDetail(RestoreId, Step, ObjectType, ObjectSchema, ObjectName, Action, Command, ErrorCode, Message, LogDate) 
-            VALUES ($RestoreId, 'DROP ORPHAN VIEW', 'VIEW', '$SchemaName', '$viewName', 'DROP', '$($dropViewQuery.Replace("'", "''"))', 1, '$errorMsg', GETDATE())"
-            Invoke-DbaQuery -SqlInstance $LogInstance -Database $LogDatabase -Query $logQuery
-            $ErrorCode = 1
-        }
-    }
-}
 
 #############################################################################################
 ## DROP ORPHAN STORED PROCEDURE
@@ -379,6 +482,14 @@ foreach ($table in $sourceTables) {
         }
     }
 
+    # Vérifier si la table a une colonne IDENTITY
+    $hasIdentity = Invoke-DbaQuery -SqlInstance $SqlInstance -Database $SourceDB -Query "
+        SELECT COUNT(*) 
+        FROM sys.columns 
+        WHERE object_id = OBJECT_ID('$SchemaName.$tableName') 
+          AND is_identity = 1
+    " | Select-Object -ExpandProperty Column1
+
     # Récupérer colonnes insérables avec leur type
     $columns = Invoke-DbaQuery -SqlInstance $SqlInstance -Database $SourceDB -Query "
         SELECT 
@@ -388,7 +499,6 @@ foreach ($table in $sourceTables) {
         JOIN sys.types t ON c.user_type_id = t.user_type_id
         WHERE c.object_id = OBJECT_ID('$SchemaName.$tableName')
             AND c.is_computed = 0
-            AND c.is_identity = 0
         ORDER BY c.column_id
     "
 
@@ -421,7 +531,12 @@ foreach ($table in $sourceTables) {
 
     if (!$WhatIf) {
         try {
-            Invoke-DbaQuery -SqlInstance $SqlInstance -Database $TargetDB -Query $insertQuery -EnableException
+            if ($hasIdentity -gt 0) {
+                Invoke-DbaQuery -SqlInstance $SqlInstance -Database $TargetDB -Query "SET IDENTITY_INSERT [$SchemaName].[$tableName] ON;$insertQuery;SET IDENTITY_INSERT [$SchemaName].[$tableName] OFF;" -EnableException
+            }
+            else{
+                Invoke-DbaQuery -SqlInstance $SqlInstance -Database $TargetDB -Query $insertQuery -EnableException
+            }
 
             $logQuery = "INSERT INTO dbo.RestoreSchemaLogDetail (RestoreId, Step, ObjectType, ObjectSchema, ObjectName, Action, Command, ErrorCode, Message, LogDate)
             VALUES ($RestoreId, 'INSERT DATA', 'TABLE', '$SchemaName', '$tableName', 'INSERT', '$($insertQuery.Replace("'", "''"))', 0, 'Success', GETDATE())"
@@ -434,8 +549,7 @@ foreach ($table in $sourceTables) {
             Invoke-DbaQuery -SqlInstance $LogInstance -Database $LogDatabase -Query $logQuery
             $ErrorCode = 1
         }
-}
-
+    }
 }
 
 
@@ -470,7 +584,7 @@ Get-ChildItem -Path $TempScriptPath -Filter *.sql | ForEach-Object {
         }
 
         # Suppression du fichier après exécution
-        Remove-Item -Path $file -Force
+        #Remove-Item -Path $file -Force
     }
 }
 
@@ -488,25 +602,25 @@ $views = Get-DbaDbView -SqlInstance $SqlInstance -Database $SourceDB | Where-Obj
 if (!$WhatIf) {
     $fileviews = $views | Export-DbaScript -Path $TempScriptPath
 
-    
-    foreach($file in $fileviews){     
+    $fileviewsUniques = $fileviews | Select-Object -Unique
+
+    foreach($file in $fileviewsUniques){  
         $content = Get-Content $file.FullName -Raw
-        $content = $content -replace '(?i)\bCREATE\s+VIEW\b', 'CREATE OR ALTER VIEW'
+        $content = $content -replace 'CREATE VIEW', 'CREATE OR ALTER VIEW'
         Set-Content -Path $file.FullName -Value $content
     }
     
 }
 
 if (!$WhatIf) {
-    foreach($file in $fileviews){   
+    foreach($file in $fileviewsUniques){   
         $fullPath = $file.FullName
-
         $commandRaw = Get-Content $file -Raw
         $command = $commandRaw.Replace("'", "''")
         $command = $command -replace "`r`n", " " -replace "`n", " " -replace "`r", " "
-
         
             try {
+                
                 Invoke-DbaQuery -SqlInstance $SqlInstance -Database $TargetDB -File $fullPath -EnableException
 
                 $logQuery="INSERT INTO dbo.RestoreSchemaLogDetail (RestoreId, Step, ObjectType, ObjectSchema, ObjectName, Action, Command, ErrorCode, Message, LogDate)
@@ -517,7 +631,7 @@ if (!$WhatIf) {
 
                 $logQuery="INSERT INTO dbo.RestoreSchemaLogDetail (RestoreId, Step, ObjectType, ObjectSchema, ObjectName, Action, Command, ErrorCode, Message, LogDate)
                 VALUES ($RestoreId, 'CREATE/ALTER VIEWS', 'VIEW', NULL, '$fullPath', 'CREATE OR ALTER', '$($command.Replace("'", "''"))', 1, '$errorMsg', GETDATE())"
-                Invoke-DbaQuery -SqlInstance $LogInstance -Database $LogDatabase -Query 
+                Invoke-DbaQuery -SqlInstance $LogInstance -Database $LogDatabase -Query $logQuery
                 $ErrorCode = 1
             }
           
@@ -526,7 +640,7 @@ if (!$WhatIf) {
     }
 
     Get-ChildItem -Path $TempScriptPath -Filter *.sql | ForEach-Object {
-    Remove-Item -Path $_.FullName -Force
+        Remove-Item -Path $_.FullName -Force
     }
 
 }
@@ -545,7 +659,10 @@ $storedProcedures = Get-DbaDbStoredProcedure -SqlInstance $SqlInstance -Database
 if (!$WhatIf) {
     $procFiles = $storedProcedures | Export-DbaScript -Path $TempScriptPath
 
-    foreach($file in $procFiles){
+    $fileprocsUniques = $procFiles | Select-Object -Unique
+
+
+    foreach($file in $fileprocsUniques){
         $content = Get-Content $file.FullName -Raw
         $content = $content -replace '(?i)\bCREATE\s+PROCEDURE\b', 'CREATE OR ALTER PROCEDURE'
         Set-Content -Path $file.FullName -Value $content
@@ -555,7 +672,7 @@ if (!$WhatIf) {
 }
 
 if (!$WhatIf) {
-    foreach($file in $procFiles){ 
+    foreach($file in $fileprocsUniques){ 
         $fullPath = $file.FullName
 
         $commandRaw = Get-Content $file -Raw
@@ -582,7 +699,7 @@ if (!$WhatIf) {
     }
 
     Get-ChildItem -Path $TempScriptPath -Filter *.sql | ForEach-Object {
-    Remove-Item -Path $_.FullName -Force
+        Remove-Item -Path $_.FullName -Force
     }
 
 }
@@ -593,8 +710,8 @@ if (!$WhatIf) {
 
 $RestoreEndDatetime = $now.ToString("yyyy-MM-dd HH:mm:ss")
 
-$logQuery = "INSERT INTO dbo.RestoreSchemaLog (RestoreId,RestoreStartDatetime,RestoreEndDatetime,SourceDB,TargetDB,SchemaName,ErrorCode)
-VALUES ($RestoreId,'$RestoreStartDatetime','$RestoreEndDatetime','$SourceDB','$TargetDB','$SchemaName',$ErrorCode)"
+$logQuery = "INSERT INTO dbo.RestoreSchemaLog (RestoreId,RestoreStartDatetime,RestoreEndDatetime,SourceDB,TargetDB,SchemaName,ErrorCode,Message)
+VALUES ($RestoreId,'$RestoreStartDatetime','$RestoreEndDatetime','$SourceDB','$TargetDB','$SchemaName',$ErrorCode,'Message temporaire')"
 
 Invoke-DbaQuery -SqlInstance $LogInstance -Database $LogDatabase -Query $logQuery
 
