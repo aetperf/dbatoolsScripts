@@ -19,6 +19,7 @@ $RestoreId = [DateTime]::UtcNow.Ticks
 $ErrorCode = 0
 
 
+
 $DebugParam = $True
 
 # Create folder if doesn't exist
@@ -149,7 +150,10 @@ $externalViewsUsingOurObjects = $dependencies | Where-Object {
 
 if (($externalViewsUsingOurObjects | Select-Object -ExpandProperty Referencer -Unique).Count -gt 0) {
     $ErrorCode = 1
-    $ErrorMessage = "External views of schema reference objects that you want to delete"
+    $externalViewsUsingOurObjects | ForEach-Object{
+        $ErrorList += "[$($_.Referencer)/$($_.Referenced)]"
+    }
+    $ErrorMessage = "External views in an other schema reference objects that you want to delete : $ErrorList"
 
     $RestoreEndDatetime = $now.ToString("yyyy-MM-dd HH:mm:ss")
     #$externalViewsUsingOurObjects | Select-Object Referencer, Referenced | Sort-Object Referenced | Format-Table
@@ -237,6 +241,7 @@ if (!$WhatIf) {
     $sorted | ForEach-Object {
         $viewName=$_
         $dropViewQuery="DROP VIEW $_"
+        
 
         try {
             Invoke-DbaQuery -SqlInstance $SqlInstance -Database $TargetDB -Query $dropViewQuery -EnableException
@@ -387,7 +392,140 @@ foreach ($proc in $procsToDelete) {
     }
 }
 
+#############################################################################################
+## CHECK CROSS SCHEMA OBJECT TO DROP VIEW BEFORE TRUNCATE INSERT DATA
+#############################################################################################
+$dependentViewsTarget = Invoke-DbaQuery -SqlInstance $SqlInstance -Database $TargetDB -Query @"
+SELECT 
+    OBJECT_SCHEMA_NAME(d.referencing_id) AS ViewSchema,
+    OBJECT_NAME(d.referencing_id) AS ViewName,
+    OBJECT_SCHEMA_NAME(d.referenced_id) AS ReferencedSchema,
+    OBJECT_NAME(d.referenced_id) AS ReferencedObject
+FROM sys.sql_expression_dependencies d
+WHERE 
+    OBJECTPROPERTY(d.referencing_id, 'IsView') = 1
+    AND OBJECTPROPERTY(d.referencing_id, 'IsSchemaBound') = 1
+    AND OBJECT_SCHEMA_NAME(d.referenced_id) = '$SchemaName'
+    AND OBJECT_SCHEMA_NAME(d.referencing_id) <> '$SchemaName'
+"@
 
+
+if ($dependentViewsTarget.Count -gt 0) {
+    Write-Error "❌ Des vues WITH SCHEMABINDING d'autres schémas référencent des objets dans le schéma '$SchemaName' de la Target. Impossible de modifier ces tables."
+    $dependentViewsTarget | Format-Table ViewSchema, ViewName, ReferencedSchema, ReferencedObject
+    return
+} else {
+    Write-Host "✅ Aucun lien SCHEMABINDING externe détecté sur la target. OK pour TRUNCATE/INSERT."
+}
+
+
+# --- ÉTAPE 1 : Récupérer les vues du schéma ---
+$viewsTarget = Invoke-DbaQuery -SqlInstance $SqlInstance -Database $TargetDB -Query @"
+SELECT 
+    s.name AS SchemaName,
+    v.name AS ViewName,
+    OBJECT_SCHEMA_NAME(v.object_id) + '.' + v.name AS FullName,
+    OBJECTPROPERTY(v.object_id, 'IsSchemaBound') AS IsSchemaBound,
+    v.object_id AS ObjectId
+FROM sys.views v
+JOIN sys.schemas s ON s.schema_id = v.schema_id
+WHERE s.name = '$SchemaName'
+"@
+
+# --- Étape 1 : Construire un dictionnaire (nom complet => objet vue)
+$viewDictTarget = @{}
+foreach ($view in $viewsTarget) {
+    $viewDictTarget[$view.FullName] = $view
+}
+
+# --- Étape 2 : Obtenir toutes les dépendances entre vues
+$dependenciesTarget = Invoke-DbaQuery -SqlInstance $SqlInstance -Database $TargetDB -Query @"
+SELECT 
+    OBJECT_SCHEMA_NAME(referencing_id) + '.' + OBJECT_NAME(referencing_id) AS Referencer,
+    OBJECT_SCHEMA_NAME(referenced_id) + '.' + OBJECT_NAME(referenced_id) AS Referenced
+FROM sys.sql_expression_dependencies
+WHERE 
+    OBJECTPROPERTY(referencing_id, 'IsView') = 1
+    AND OBJECTPROPERTY(referenced_id, 'IsView') = 1
+"@
+
+# --- Étape 3 : Filtrer les dépendances internes
+$viewNamesTarget = $viewDictTarget.Keys
+$internalDepsTarget = $dependenciesTarget | Where-Object {
+    $_.Referencer -in $viewNamesTarget -and $_.Referenced -in $viewNamesTarget
+}
+
+# --- Étape 4 : Construire graphe + in-degree
+$graph = @{}
+$inDegree = @{}
+
+foreach ($viewName in $viewNamesTarget) {
+    $graph[$viewName] = @()
+    $inDegree[$viewName] = 0
+}
+
+foreach ($dep in $internalDepsTarget) {
+    $graph[$dep.Referenced] += $dep.Referencer
+    $inDegree[$dep.Referencer]++
+}
+
+# --- Étape 5 : Tri topologique (Kahn)
+$queue = New-Object System.Collections.Generic.Queue[string]
+$inDegree.Keys | Where-Object { $inDegree[$_] -eq 0 } | ForEach-Object { $queue.Enqueue($_) }
+
+$sortedTarget = @()
+
+while ($queue.Count -gt 0) {
+    $current = $queue.Dequeue()
+    $sortedTarget += $current
+
+    foreach ($dependent in $graph[$current]) {
+        $inDegree[$dependent]--
+        if ($inDegree[$dependent] -eq 0) {
+            $queue.Enqueue($dependent)
+        }
+    }
+}
+
+# --- Étape 6 : Vérification cycle
+if ($sortedTarget.Count -ne $viewNamesTarget.Count) {
+    Write-Error "⚠️ Cycle détecté dans les dépendances entre vues."
+    return
+}
+
+# --- Étape 7 : Inverser pour DROP
+$sortedTarget = [System.Collections.ArrayList]::new($sortedTarget)
+$sortedTarget.Reverse()
+
+$viewsFolder = Join-Path $TempScriptPath "views"
+if (-not (Test-Path $viewsFolder)) {
+    New-Item -ItemType Directory -Path $viewsFolder | Out-Null
+}
+
+
+# --- Étape 1 : Récupérer toutes les vues du schéma dans la source
+foreach ($viewName in $sortedTarget) {
+    $view = $viewDictTarget[$viewName]  # Contient FullName, SchemaName, ViewName, IsSchemaBound
+
+    $dropViewQuery = "DROP VIEW $viewName"
+    Write-Host $dropViewQuery
+
+    try {
+        Invoke-DbaQuery -SqlInstance $SqlInstance -Database $TargetDB -Query $dropViewQuery
+
+        $logQuery = "INSERT INTO dbo.RestoreSchemaLogDetail (RestoreId, Step, ObjectType, ObjectSchema, ObjectName, Action, Command, ErrorCode, Message, LogDate)
+        VALUES ($RestoreId, 'DROP VIEW BEFORE TRUNCATE INSERT DATA', 'VIEW', '$($view.SchemaName)', '$($view.ViewName)', 'DROP', '$dropViewQuery', 0, 'Success', GETDATE())"
+        Invoke-DbaQuery -SqlInstance $LogInstance -Database $LogDatabase -Query $logQuery
+        }
+        catch {
+            $errorMsg = $_.Exception.Message.Replace("'", "''")
+            $logQuery = "INSERT INTO dbo.RestoreSchemaLogDetail (RestoreId, Step, ObjectType, ObjectSchema, ObjectName, Action, Command, ErrorCode, Message, LogDate)
+            VALUES ($RestoreId, 'DROP VIEW BEFORE TRUNCATE INSERT DATA', 'VIEW', '$($view.SchemaName)', '$($view.ViewName)', 'DROP', '$dropViewQuery', 1, '$errorMsg', GETDATE())"
+            Invoke-DbaQuery -SqlInstance $LogInstance -Database $LogDatabase -Query $logQuery
+            $ErrorCode = 1
+        }
+    
+}
 
 #############################################################################################
 ## DISABLED FOREIGN KEY TO TRUNCATE INSERT DATA
@@ -410,13 +548,6 @@ $foreignKey = Invoke-DbaQuery -SqlInstance $SqlInstance -Database $TargetDB -Que
         INNER JOIN sys.schemas sch_ref ON t_ref.schema_id = sch_ref.schema_id
     WHERE sch_ref.name = '$SchemaName'
 "
-# Get all foreign key object
-$foreignKeyObject = Get-DbaDbForeignKey -SqlInstance $SqlInstance -Database $TargetDB | Where-Object { $_.Name -in $foreignKey.ForeignKeyName }
-
-# Export of all foreign key script
-if(!$WhatIf){
-    $res = $foreignKeyObject | Export-DbaScript -Path $TempScriptPath
-}
 
 # drop the constraint for each foreign key
 foreach ($fk in $foreignKey) {
@@ -560,9 +691,42 @@ foreach ($table in $sourceTables) {
 if($DebugParam){
      Write-Host "ENABLED FOREIGN KEY CONSTRAINT"
 }
-Get-ChildItem -Path $TempScriptPath -Filter *.sql | ForEach-Object {
-    $file = $_.FullName
 
+$fkFolder = Join-Path $TempScriptPath "foreignkey"
+
+if (!(Test-Path -Path $fkFolder)) {
+    New-Item -Path $fkFolder -ItemType Directory | Out-Null
+}
+
+# Get all foreign keys that reference a table in the schema
+$foreignKey = Invoke-DbaQuery -SqlInstance $SqlInstance -Database $SourceDB -Query "
+    SELECT
+        fk.name AS ForeignKeyName,
+        sch_parent.name AS ReferencingSchema,
+        t_parent.name AS ReferencingTable
+    FROM sys.foreign_keys fk
+        INNER JOIN sys.foreign_key_columns fkc ON fk.object_id = fkc.constraint_object_id
+        INNER JOIN sys.tables t_parent ON fkc.parent_object_id = t_parent.object_id
+        INNER JOIN sys.schemas sch_parent ON t_parent.schema_id = sch_parent.schema_id
+        INNER JOIN sys.tables t_ref ON fkc.referenced_object_id = t_ref.object_id
+        INNER JOIN sys.schemas sch_ref ON t_ref.schema_id = sch_ref.schema_id
+    WHERE sch_ref.name = '$SchemaName'
+"
+# Get all foreign key object
+$foreignKeyObject = Get-DbaDbForeignKey -SqlInstance $SqlInstance -Database $SourceDB | Where-Object { $_.Name -in $foreignKey.ForeignKeyName }
+
+# Export of all foreign key script
+if(!$WhatIf){
+    $foreignKeyObject | ForEach-Object {
+        $filePath = Join-Path $fkFolder "$($_.Name).sql"
+
+        $null = $_ | Export-DbaScript -FilePath $filePath 
+    }
+}
+
+Get-ChildItem -Path $fkFolder -Filter "*.sql" | ForEach-Object {
+    $file = $_.FullName
+    write-host $file
     $commandRaw = Get-Content $file -Raw
     $command = $commandRaw.Replace("'", "''")
     $command = $command -replace "`r`n", " " -replace "`n", " " -replace "`r", " "
@@ -583,66 +747,175 @@ Get-ChildItem -Path $TempScriptPath -Filter *.sql | ForEach-Object {
             $ErrorCode = 1
         }
 
-        # Suppression du fichier après exécution
-        #Remove-Item -Path $file -Force
+        
     }
 }
 
-#############################################################################################
-## CREATE/ALTER VIEWS
-#############################################################################################
-
-if ($DebugParam) {
-    Write-Host "CREATE/ALTER VIEWS"
+if($ErrorCode -eq 0){
+    Get-ChildItem -Path $fkFolder -Filter "*.sql" | Remove-Item -Force
 }
 
-# Get views in the schema
-$views = Get-DbaDbView -SqlInstance $SqlInstance -Database $SourceDB | Where-Object { $_.Schema -eq $SchemaName }
+#############################################################################################
+## CREATE VIEW AFTER TRUNCATE INSERT DATA
+#############################################################################################
+$dependentViewsSource = Invoke-DbaQuery -SqlInstance $SqlInstance -Database $SourceDB -Query @"
+SELECT 
+    OBJECT_SCHEMA_NAME(d.referencing_id) AS ViewSchema,
+    OBJECT_NAME(d.referencing_id) AS ViewName,
+    OBJECT_SCHEMA_NAME(d.referenced_id) AS ReferencedSchema,
+    OBJECT_NAME(d.referenced_id) AS ReferencedObject
+FROM sys.sql_expression_dependencies d
+WHERE 
+    OBJECTPROPERTY(d.referencing_id, 'IsView') = 1
+    AND OBJECTPROPERTY(d.referencing_id, 'IsSchemaBound') = 1
+    AND OBJECT_SCHEMA_NAME(d.referenced_id) = '$SchemaName'
+    AND OBJECT_SCHEMA_NAME(d.referencing_id) <> '$SchemaName'
+"@
 
-if (!$WhatIf) {
-    $fileviews = $views | Export-DbaScript -Path $TempScriptPath
+if ($dependentViewsSource.Count -gt 0) {
+    Write-Error "❌ Des vues WITH SCHEMABINDING d'autres schémas référencent des objets dans le schéma '$SchemaName' de la Target. Impossible de modifier ces tables."
+    $dependentViewsSource | Format-Table ViewSchema, ViewName, ReferencedSchema, ReferencedObject
+    return
+} else {
+    Write-Host "✅ Aucun lien SCHEMABINDING externe détecté sur la source. OK pour TRUNCATE/INSERT."
+}
 
-    $fileviewsUniques = $fileviews | Select-Object -Unique
+# --- ÉTAPE 1 : Récupérer les vues du schéma ---
+$viewsSource = Invoke-DbaQuery -SqlInstance $SqlInstance -Database $SourceDB -Query @"
+SELECT 
+    s.name AS SchemaName,
+    v.name AS ViewName,
+    OBJECT_SCHEMA_NAME(v.object_id) + '.' + v.name AS FullName,
+    OBJECTPROPERTY(v.object_id, 'IsSchemaBound') AS IsSchemaBound,
+    v.object_id AS ObjectId
+FROM sys.views v
+JOIN sys.schemas s ON s.schema_id = v.schema_id
+WHERE s.name = '$SchemaName'
+"@
 
-    foreach($file in $fileviewsUniques){  
-        $content = Get-Content $file.FullName -Raw
-        $content = $content -replace 'CREATE VIEW', 'CREATE OR ALTER VIEW'
-        Set-Content -Path $file.FullName -Value $content
+
+# --- Étape 1 : Construire un dictionnaire (nom complet => objet vue)
+$viewDictSource = @{}
+foreach ($view in $viewsSource) {
+    $viewDictSource[$view.FullName] = $view
+}
+
+# --- Étape 2 : Obtenir toutes les dépendances entre vues
+$dependenciesSource = Invoke-DbaQuery -SqlInstance $SqlInstance -Database $SourceDB -Query @"
+SELECT 
+    OBJECT_SCHEMA_NAME(referencing_id) + '.' + OBJECT_NAME(referencing_id) AS Referencer,
+    OBJECT_SCHEMA_NAME(referenced_id) + '.' + OBJECT_NAME(referenced_id) AS Referenced
+FROM sys.sql_expression_dependencies
+WHERE 
+    OBJECTPROPERTY(referencing_id, 'IsView') = 1
+    AND OBJECTPROPERTY(referenced_id, 'IsView') = 1
+"@
+
+# --- Étape 3 : Filtrer les dépendances internes
+$viewNamesSource = $viewDictSource.Keys
+$internalDepsSource = $dependenciesSource | Where-Object {
+    $_.Referencer -in $viewNamesSource -and $_.Referenced -in $viewNamesSource
+}
+
+# --- Étape 4 : Construire graphe + in-degree
+$graph = @{}
+$inDegree = @{}
+
+foreach ($viewName in $viewNamesSource) {
+    $graph[$viewName] = @()
+    $inDegree[$viewName] = 0
+}
+
+foreach ($dep in $internalDepsSource) {
+    $graph[$dep.Referenced] += $dep.Referencer
+    $inDegree[$dep.Referencer]++
+}
+
+# --- Étape 5 : Tri topologique (Kahn)
+$queue = New-Object System.Collections.Generic.Queue[string]
+$inDegree.Keys | Where-Object { $inDegree[$_] -eq 0 } | ForEach-Object { $queue.Enqueue($_) }
+
+$sortedSource = @()
+
+while ($queue.Count -gt 0) {
+    $current = $queue.Dequeue()
+    $sortedSource += $current
+
+    foreach ($dependent in $graph[$current]) {
+        $inDegree[$dependent]--
+        if ($inDegree[$dependent] -eq 0) {
+            $queue.Enqueue($dependent)
+        }
     }
+}
+
+# --- Étape 6 : Vérification cycle
+if ($sortedSource.Count -ne $viewNamesSource.Count) {
+    Write-Error "⚠️ Cycle détecté dans les dépendances entre vues."
+    return
+}
+
+# --- Étape 7 : Inverser pour DROP
+$sortedSource = [System.Collections.ArrayList]::new($sortedSource)
+
+$viewsFolder = Join-Path $TempScriptPath "views"
+if (-not (Test-Path $viewsFolder)) {
+    New-Item -ItemType Directory -Path $viewsFolder | Out-Null
+}
+
+foreach ($index in 0..($sortedSource.Count - 1)) {
+    $viewName = $sortedSource[$index]
+    $view = $viewDictSource[$viewName]
+    
+
+    $singleView = Get-DbaDbView -SqlInstance $SqlInstance -Database $SourceDB |
+        Where-Object { $_.Schema -eq $view.SchemaName -and $_.Name -eq $view.ViewName }
+
+    
+    $safeSchema = $view.SchemaName -replace '[^\w]', '_'
+    $safeView = $view.ViewName -replace '[^\w]', '_'
+    $indexStr = "{0:D10}" -f $index  
+
+    $filePath = Join-Path $viewsFolder "$indexStr-$safeSchema-$safeView.sql"
+
+    $null = $singleView | Export-DbaScript -FilePath $filePath 
     
 }
 
-if (!$WhatIf) {
-    foreach($file in $fileviewsUniques){   
-        $fullPath = $file.FullName
-        $commandRaw = Get-Content $file -Raw
-        $command = $commandRaw.Replace("'", "''")
-        $command = $command -replace "`r`n", " " -replace "`n", " " -replace "`r", " "
-        
-            try {
-                
-                Invoke-DbaQuery -SqlInstance $SqlInstance -Database $TargetDB -File $fullPath -EnableException
+$sqlFiles = Get-ChildItem -Path $viewsFolder -Filter "*.sql" | Sort-Object Name 
 
-                $logQuery="INSERT INTO dbo.RestoreSchemaLogDetail (RestoreId, Step, ObjectType, ObjectSchema, ObjectName, Action, Command, ErrorCode, Message, LogDate)
-                VALUES ($RestoreId, 'CREATE/ALTER VIEWS', 'VIEW', NULL, '$fullPath', 'CREATE OR ALTER', '$($command.Replace("'", "''"))', 0, 'Success', GETDATE())"
-                Invoke-DbaQuery -SqlInstance $LogInstance -Database $LogDatabase -Query $logQuery          
-            } catch {
-                $errorMsg = $_.Exception.Message.Replace("'", "''")
+foreach ($file in $sqlFiles) {
+    $fullPath = $file.FullName
+    $commandRaw = Get-Content -Path $fullPath -Raw
+    $command = $commandRaw.Replace("'", "''")
+    $command = $command -replace "`r`n", " " -replace "`n", " " -replace "`r", " "
 
-                $logQuery="INSERT INTO dbo.RestoreSchemaLogDetail (RestoreId, Step, ObjectType, ObjectSchema, ObjectName, Action, Command, ErrorCode, Message, LogDate)
-                VALUES ($RestoreId, 'CREATE/ALTER VIEWS', 'VIEW', NULL, '$fullPath', 'CREATE OR ALTER', '$($command.Replace("'", "''"))', 1, '$errorMsg', GETDATE())"
-                Invoke-DbaQuery -SqlInstance $LogInstance -Database $LogDatabase -Query $logQuery
-                $ErrorCode = 1
-            }
-          
+    try {
+        if (!$WhatIf) {
+            Invoke-DbaQuery -SqlInstance $SqlInstance -Database $TargetDB -File $fullPath -EnableException
 
-        
+            $logQuery = "
+            INSERT INTO dbo.RestoreSchemaLogDetail (RestoreId, Step, ObjectType, ObjectSchema, ObjectName, Action, Command, ErrorCode, Message, LogDate)
+            VALUES ($RestoreId, 'CREATE VIEW AFTER TRUNCATE INSERT DATA', 'VIEW', NULL, '$fullPath', 'CREATE', '$command', 0, 'Success', GETDATE())
+            "
+            Invoke-DbaQuery -SqlInstance $LogInstance -Database $LogDatabase -Query $logQuery
+        }
     }
+    catch {
+        $errorMsg = $_.Exception.Message.Replace("'", "''")
 
-    Get-ChildItem -Path $TempScriptPath -Filter *.sql | ForEach-Object {
-        Remove-Item -Path $_.FullName -Force
+        $logQuery = "
+        INSERT INTO dbo.RestoreSchemaLogDetail (RestoreId, Step, ObjectType, ObjectSchema, ObjectName, Action, Command, ErrorCode, Message, LogDate)
+        VALUES ($RestoreId, 'CREATE VIEW AFTER TRUNCATE INSERT DATA', 'VIEW', NULL, '$fullPath', 'CREATE', '$command', 1, '$errorMsg', GETDATE())
+        "
+        Invoke-DbaQuery -SqlInstance $LogInstance -Database $LogDatabase -Query $logQuery
+
+        $ErrorCode = 1
     }
+}
 
+if($ErrorCode -eq 0){
+    Get-ChildItem -Path $viewsFolder -Filter "*.sql" | Remove-Item -Force
 }
 
 
@@ -653,33 +926,35 @@ if ($DebugParam) {
     Write-Host "CREATE/ALTER PROCEDURES"
 }
 
+$procFolder = Join-Path $TempScriptPath "storedprocedure"
+if (-not (Test-Path $procFolder)) {
+    New-Item -ItemType Directory -Path $procFolder | Out-Null
+}
+
 # Get procedures in the schema
 $storedProcedures = Get-DbaDbStoredProcedure -SqlInstance $SqlInstance -Database $SourceDB | Where-Object { $_.Schema -eq $SchemaName }
 
-if (!$WhatIf) {
-    $procFiles = $storedProcedures | Export-DbaScript -Path $TempScriptPath
 
-    $fileprocsUniques = $procFiles | Select-Object -Unique
+if(!$WhatIf){
+    $storedProcedures | ForEach-Object {
+        $filePath = Join-Path $procFolder "$($_.Name).sql"
 
+        $procFile = $_ | Export-DbaScript -FilePath $filePath 
 
-    foreach($file in $fileprocsUniques){
-        $content = Get-Content $file.FullName -Raw
+        $content = Get-Content $procFile.FullName -Raw
         $content = $content -replace '(?i)\bCREATE\s+PROCEDURE\b', 'CREATE OR ALTER PROCEDURE'
-        Set-Content -Path $file.FullName -Value $content
+        Set-Content -Path $procFile.FullName -Value $content
     }
-
-    
 }
 
 if (!$WhatIf) {
-    foreach($file in $fileprocsUniques){ 
-        $fullPath = $file.FullName
+    Get-ChildItem -Path $procFolder -Filter "*.sql" | ForEach-Object {
+    $fullPath = $_.FullName
+    write-host $fullPath
+    $commandRaw = Get-Content $fullPath -Raw
+    $command = $commandRaw.Replace("'", "''")
+    $command = $command -replace "`r`n", " " -replace "`n", " " -replace "`r", " "
 
-        $commandRaw = Get-Content $file -Raw
-        $command = $commandRaw.Replace("'", "''")
-        $command = $command -replace "`r`n", " " -replace "`n", " " -replace "`r", " "
-
-        
         try {
             Invoke-DbaQuery -SqlInstance $SqlInstance -Database $TargetDB -File $fullPath -EnableException
 
@@ -698,8 +973,8 @@ if (!$WhatIf) {
         }    
     }
 
-    Get-ChildItem -Path $TempScriptPath -Filter *.sql | ForEach-Object {
-        Remove-Item -Path $_.FullName -Force
+    if($ErrorCode -eq 0){
+        Get-ChildItem -Path $procFolder -Filter "*.sql" | Remove-Item -Force
     }
 
 }
