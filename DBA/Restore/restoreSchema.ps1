@@ -1,4 +1,4 @@
-# .\restoreSchema.ps1 -SqlInstance "LAPTOP-R6ED0C8E\DBA01" -SourceDB "AD2019" -TargetDB "AdventureWorks2019" -SchemaName "HumanResources" -TempScriptPath "D:\pacollet\Client\MinistereJustice\RestoreSchema\script"
+# .\restoreSchema.ps1 -SqlInstance "LAPTOP-R6ED0C8E\DBA01" -SourceDB "AD2019" -TargetDB "AdventureWorks2019" -SchemaName "HumanResources" -LogInstance "LAPTOP-R6ED0C8E\DBA01" -LogDatabase "DBATOOLS"
 
 param 
 (
@@ -6,33 +6,42 @@ param
     [Parameter(Mandatory)] [string] $SourceDB,
     [Parameter(Mandatory)] [string] $TargetDB,
     [Parameter(Mandatory)] [string] $SchemaName,
-    [Parameter(Mandatory)] [string] $TempScriptPath,
     [Parameter(Mandatory)] [string] $LogInstance,
     [Parameter(Mandatory)] [string] $LogDatabase,
     [Parameter()] [switch] $WhatIf,
-    [Parameter()] [switch] $PurgeScript
+    [Parameter()] [switch] $ContinueOnError,
+    [Parameter()] [ValidateSet("DEBUG", "INFO", "ERROR")] [string] $LogLevel = "INFO"
 )
 
-$now = Get-Date
-$RestoreStartDatetime = $now.ToString("yyyy-MM-dd HH:mm:ss")
+$Parallel = 4
+$silent = Set-DbatoolsInsecureConnection
+
+$start = Get-Date
+$RestoreStartDatetime = $start.ToString("yyyy-MM-dd HH:mm:ss")
 $RestoreId = [DateTime]::UtcNow.Ticks
 $ErrorCode = 0
 
-$smoServer = New-Object Microsoft.SqlServer.Management.Smo.Server $SqlInstance
-$smoDb = $smoServer.Databases[$SourceDB]
 
 $DebugParam = $True
 
-# Create folder if doesn't exist
-if (!(Test-Path $TempScriptPath)) {
-    New-Item -ItemType Directory -Path $TempScriptPath
+# Initialize logging
+Set-LoggingDefaultLevel -Level $LogLevel
+Add-LoggingTarget -Name Console -Configuration @{
+    ColorMapping = @{
+        DEBUG = 'Gray'
+        INFO  = 'White'
+        ERROR = 'DarkRed'
+    };
+    
 }
+
+Write-Log -Level INFO -Message "SQL instance: $SqlInstance"
+Write-Log -Level INFO -Message "Source DB: $SourceDB | Target DB: $TargetDB | Schema: $SchemaName"
 
 #############################################################################################
 ## INITIALIZE LOG TABLE IN THE LOGDATABASE
 #############################################################################################
-# Vérifier et créer les tables de log si nécessaire
-Write-Host "CREATE LOG TABLES"
+Write-Log -Level INFO -Message "STEP : CREATE LOG TABLES"
 
 $createLogTableQuery = @"
 IF NOT EXISTS (
@@ -75,103 +84,22 @@ BEGIN
 END
 "@
 if(!$WhatIf){
-    Invoke-DbaQuery -SqlInstance $LogInstance -Database $LogDatabase -Query $createLogTableQuery
-    Invoke-DbaQuery -SqlInstance $LogInstance -Database $LogDatabase -Query $createDetailTableQuery   
+    Invoke-DbaQuery -SqlInstance $LogInstance -Database $LogDatabase -Query $createLogTableQuery 
+    Invoke-DbaQuery -SqlInstance $LogInstance -Database $LogDatabase -Query $createDetailTableQuery 
 }
 
-#############################################################################################
-## GET SOURCE OBJECT
-#############################################################################################
-$sourceTables = Invoke-DbaQuery -SqlInstance $SqlInstance -Database $SourceDB -Query "
-    SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES 
-    WHERE TABLE_SCHEMA = '$SchemaName' AND TABLE_TYPE = 'BASE TABLE'
-"
-
-$sourceViews = Invoke-DbaQuery -SqlInstance $SqlInstance -Database $SourceDB -Query "
-    SELECT TABLE_NAME FROM INFORMATION_SCHEMA.VIEWS 
-    WHERE TABLE_SCHEMA = '$SchemaName'
-"
-
-$sourceProcedures = Invoke-DbaQuery -SqlInstance $SqlInstance -Database $SourceDB -Query "
-    SELECT ROUTINE_NAME FROM INFORMATION_SCHEMA.ROUTINES 
-    WHERE ROUTINE_TYPE = 'PROCEDURE' AND ROUTINE_SCHEMA = '$SchemaName'
-"
 
 #############################################################################################
-## GET TARGET OBJECT
-#############################################################################################
-$targetTables = Invoke-DbaQuery -SqlInstance $SqlInstance -Database $TargetDB -Query "
-    SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES 
-    WHERE TABLE_SCHEMA = '$SchemaName' AND TABLE_TYPE = 'BASE TABLE'
-"
-
-$targetViews = Invoke-DbaQuery -SqlInstance $SqlInstance -Database $TargetDB -Query "
-    SELECT TABLE_NAME FROM INFORMATION_SCHEMA.VIEWS 
-    WHERE TABLE_SCHEMA = '$SchemaName'
-"
-
-$targetProcedures = Invoke-DbaQuery -SqlInstance $SqlInstance -Database $TargetDB -Query "
-    SELECT ROUTINE_NAME FROM INFORMATION_SCHEMA.ROUTINES 
-    WHERE ROUTINE_TYPE = 'PROCEDURE' AND ROUTINE_SCHEMA = '$SchemaName'
-"
-
-#############################################################################################
-## CHECK CROSS SCHEMA OBJECT
+## CHECK CROSS-SCHEMA OBJECT REFERENCES
 #############################################################################################
 
-# Get Table which are not in the source 
-$tablesToDelete = $targetTables | Where-Object { $_.TABLE_NAME -notin $sourceTables.TABLE_NAME }
-$viewsToDelete = $targetViews | Where-Object { $_.TABLE_NAME -notin $sourceViews.TABLE_NAME }
+Write-Log -Level INFO -Message "STEP : CHECKING FOR CROSS-SCHEMA DEPENDENCIES IN SOURCE AND TARGET DATABASES"
 
-
-$objectsToDelete = @(
-    @($tablesToDelete) + @($viewsToDelete) | ForEach-Object {
-        "$SchemaName.$($_.TABLE_NAME)"
-    }
-)
-
-$dependencies = Invoke-DbaQuery -SqlInstance $SqlInstance -Database $TargetDB -Query @"
-SELECT distinct
-    OBJECT_SCHEMA_NAME(referencing_id) + '.' + OBJECT_NAME(referencing_id) AS Referencer,
-    OBJECT_SCHEMA_NAME(referenced_id) + '.' + OBJECT_NAME(referenced_id) AS Referenced,
-    OBJECT_SCHEMA_NAME(referencing_id) AS ReferencerSchema,
-    OBJECT_NAME(referencing_id) AS ReferencerObject,
-    OBJECT_NAME(referenced_id) AS ReferencedObject
-FROM sys.sql_expression_dependencies
-WHERE referencing_id IS NOT NULL AND referenced_id IS NOT NULL
-"@
-
-$externalViewsUsingOurObjects = $dependencies | Where-Object {
-    ($_.Referenced -in $objectsToDelete) -and
-    ($_.ReferencerSchema -ne $SchemaName) -and
-    ($_.Referencer -ne $_.Referenced) -and  
-    ($_ -ne $null)
-}
-
-if (($externalViewsUsingOurObjects | Select-Object -ExpandProperty Referencer -Unique).Count -gt 0) {
-    $ErrorCode = 1
-    $externalViewsUsingOurObjects | ForEach-Object{
-        $ErrorList += "[$($_.Referencer)/$($_.Referenced)]"
-    }
-    $ErrorMessage = "Views in an other schema reference objects that you want to delete : $ErrorList"
-
-    $RestoreEndDatetime = $now.ToString("yyyy-MM-dd HH:mm:ss")
-    #$externalViewsUsingOurObjects | Select-Object Referencer, Referenced | Sort-Object Referenced | Format-Table
-
-    $logQuery = "INSERT INTO dbo.RestoreSchemaLog (RestoreId,RestoreStartDatetime,RestoreEndDatetime,SourceDB,TargetDB,SchemaName,ErrorCode,Message)
-    VALUES ($RestoreId,'$RestoreStartDatetime','$RestoreEndDatetime','$SourceDB','$TargetDB','$SchemaName',$ErrorCode,'$ErrorMessage')"
-
-    Invoke-DbaQuery -SqlInstance $LogInstance -Database $LogDatabase -Query $logQuery
-    
-    if($DebugParam){
-        Write-Error $ErrorMessage
-    }
-    return
-} 
-
+# Check for SCHEMABINDING views in source database
+Write-Log -Level INFO -Message "Checking SCHEMABINDING views in SOURCE database referencing schema '$SchemaName'"
 
 $dependentViewsSource = Invoke-DbaQuery -SqlInstance $SqlInstance -Database $SourceDB -Query @"
-SELECT 
+SELECT distinct
     OBJECT_SCHEMA_NAME(d.referencing_id) AS ViewSchema,
     OBJECT_NAME(d.referencing_id) AS ViewName,
     OBJECT_SCHEMA_NAME(d.referenced_id) AS ReferencedSchema,
@@ -185,15 +113,18 @@ WHERE
 "@
 
 if ($dependentViewsSource.Count -gt 0) {
-    Write-Error "❌ Des vues WITH SCHEMABINDING d'autres schémas référencent des objets dans le schéma '$SchemaName' de la Target. Impossible de modifier ces tables."
+    Write-Log -Level ERROR -Message "SCHEMABINDING views in the SOURCE database (outside schema '$SchemaName') reference objects inside '$SchemaName'. Cannot safely proceed restore schema."
     $dependentViewsSource | Format-Table ViewSchema, ViewName, ReferencedSchema, ReferencedObject
     return
 } else {
-    Write-Host "✅ Aucun lien SCHEMABINDING externe détecté sur la source. OK pour TRUNCATE/INSERT."
+    Write-Log -Level INFO -Message "No SCHEMABINDING views in SOURCE reference schema '$SchemaName'."
 }
 
+# Check for SCHEMABINDING views in target database
+Write-Log -Level INFO -Message "Checking SCHEMABINDING views in TARGET database referencing schema '$SchemaName'"
+
 $dependentViewsTarget = Invoke-DbaQuery -SqlInstance $SqlInstance -Database $TargetDB -Query @"
-SELECT 
+SELECT distinct
     OBJECT_SCHEMA_NAME(d.referencing_id) AS ViewSchema,
     OBJECT_NAME(d.referencing_id) AS ViewName,
     OBJECT_SCHEMA_NAME(d.referenced_id) AS ReferencedSchema,
@@ -206,60 +137,24 @@ WHERE
     AND OBJECT_SCHEMA_NAME(d.referencing_id) <> '$SchemaName'
 "@
 
-
 if ($dependentViewsTarget.Count -gt 0) {
-    Write-Error "❌ Des vues WITH SCHEMABINDING d'autres schémas référencent des objets dans le schéma '$SchemaName' de la Target. Impossible de modifier ces tables."
+    Write-Log -Level ERROR -Message "SCHEMABINDING views in the TARGET database (outside schema '$SchemaName') reference objects inside '$SchemaName'. Cannot safely proceed restore schema."
     $dependentViewsTarget | Format-Table ViewSchema, ViewName, ReferencedSchema, ReferencedObject
     return
 } else {
-    Write-Host "✅ Aucun lien SCHEMABINDING externe détecté sur la target. OK pour TRUNCATE/INSERT."
+    Write-Log -Level INFO -Message "No SCHEMABINDING views in TARGET reference schema '$SchemaName'."
 }
 
 
-
 #############################################################################################
-## DROP ORPHAN STORED PROCEDURE
-#############################################################################################
-if($DebugParam){
-    Write-Host "DROP ORPHAN STORED PROCEDURE"
-}
-
-# Get Stored Procedure which are not in the source 
-$procsToDelete = $targetProcedures | Where-Object { $_.ROUTINE_NAME -notin $sourceProcedures.ROUTINE_NAME }
-
-# Drop Procedure which are not in the source
-foreach ($proc in $procsToDelete) {
-    $procName = $proc.ROUTINE_NAME
-    $fullProc = "[$SchemaName].[$procName]"
-    $dropProcQuery = "DROP PROCEDURE $fullProc"
-
-    if ($DebugParam) {
-        Write-Host $dropProcQuery
-    }
-
-    if (!$WhatIf) {
-        try {
-            Invoke-DbaQuery -SqlInstance $SqlInstance -Database $TargetDB -Query $dropProcQuery -EnableException
-
-            $logQuery = "INSERT INTO dbo.RestoreSchemaLogDetail(RestoreId, Step, ObjectType, ObjectSchema, ObjectName, Action, Command, ErrorCode, Message, LogDate)
-            VALUES ($RestoreId, 'DROP ORPHAN STORED PROCEDURE', 'STORED PROCEDURE', '$SchemaName', '$procName', 'DROP', '$($dropProcQuery.Replace("'", "''"))', 0, 'Success', GETDATE())"
-            Invoke-DbaQuery -SqlInstance $LogInstance -Database $LogDatabase -Query $logQuery
-        }
-        catch {
-            $errorMsg = $_.Exception.Message.Replace("'", "''")
-            $logQuery = "INSERT INTO dbo.RestoreSchemaLogDetail (RestoreId, Step, ObjectType, ObjectSchema, ObjectName, Action, Command, ErrorCode, Message, LogDate)
-            VALUES ($RestoreId, 'DROP ORPHAN STORED PROCEDURE', 'STORED PROCEDURE', '$SchemaName', '$procName', 'DROP', '$($dropProcQuery.Replace("'", "''"))', 1, '$errorMsg', GETDATE())"
-            Invoke-DbaQuery -SqlInstance $LogInstance -Database $LogDatabase -Query $logQuery
-            $ErrorCode = 1
-        }
-    }
-}
-
-#############################################################################################
-## CHECK CROSS SCHEMA OBJECT TO DROP VIEW BEFORE TRUNCATE INSERT DATA
+##
+## DROP VIEW BEFORE DROP INSERT
+##
 #############################################################################################
 
-# --- ÉTAPE 1 : Récupérer les vues du schéma ---
+Write-Log -Level INFO -Message "STEP : DROP VIEW BEFORE DROP INSERT"
+
+# --- Step 1: Retrieve views from target schema
 $viewsTarget = Invoke-DbaQuery -SqlInstance $SqlInstance -Database $TargetDB -Query @"
 SELECT 
     s.name AS SchemaName,
@@ -272,13 +167,15 @@ JOIN sys.schemas s ON s.schema_id = v.schema_id
 WHERE s.name = '$SchemaName'
 "@
 
-# --- Étape 1 : Construire un dictionnaire (nom complet => objet vue)
+Write-Log -Level INFO -Message ("Found {0} views to drop." -f $viewsTarget.Count)
+
+# --- Step 2: Build dictionary (FullName => View object)
 $viewDictTarget = @{}
 foreach ($view in $viewsTarget) {
     $viewDictTarget[$view.FullName] = $view
 }
 
-# --- Étape 2 : Obtenir toutes les dépendances entre vues
+
 $dependenciesTarget = Invoke-DbaQuery -SqlInstance $SqlInstance -Database $TargetDB -Query @"
 SELECT 
     OBJECT_SCHEMA_NAME(referencing_id) + '.' + OBJECT_NAME(referencing_id) AS Referencer,
@@ -289,13 +186,13 @@ WHERE
     AND OBJECTPROPERTY(referenced_id, 'IsView') = 1
 "@
 
-# --- Étape 3 : Filtrer les dépendances internes
+# --- Step 4: Filter internal dependencies (only between views in the schema)
 $viewNamesTarget = $viewDictTarget.Keys
 $internalDepsTarget = $dependenciesTarget | Where-Object {
     $_.Referencer -in $viewNamesTarget -and $_.Referenced -in $viewNamesTarget
 }
 
-# --- Étape 4 : Construire graphe + in-degree
+# --- Step 5: Build graph and in-degree map for topological sort
 $graph = @{}
 $inDegree = @{}
 
@@ -309,7 +206,7 @@ foreach ($dep in $internalDepsTarget) {
     $inDegree[$dep.Referencer]++
 }
 
-# --- Étape 5 : Tri topologique (Kahn)
+
 $queue = New-Object System.Collections.Generic.Queue[string]
 $inDegree.Keys | Where-Object { $inDegree[$_] -eq 0 } | ForEach-Object { $queue.Enqueue($_) }
 
@@ -327,121 +224,154 @@ while ($queue.Count -gt 0) {
     }
 }
 
-# --- Étape 6 : Vérification cycle
 if ($sortedTarget.Count -ne $viewNamesTarget.Count) {
-    Write-Error "⚠️ Cycle détecté dans les dépendances entre vues."
+    Write-Log -Level ERROR -Message "Cycle detected in view dependencies. Cannot proceed with drop order."
     return
 }
 
-# --- Étape 7 : Inverser pour DROP
+
 $sortedTarget = [System.Collections.ArrayList]::new($sortedTarget)
 $sortedTarget.Reverse()
 
-$viewsFolder = Join-Path $TempScriptPath "views"
-if (-not (Test-Path $viewsFolder)) {
-    New-Item -ItemType Directory -Path $viewsFolder | Out-Null
-}
-
-
-# --- Étape 1 : Récupérer toutes les vues du schéma dans la source
 foreach ($viewName in $sortedTarget) {
-    $view = $viewDictTarget[$viewName]  # Contient FullName, SchemaName, ViewName, IsSchemaBound
+    $view = $viewDictTarget[$viewName]
 
     $dropViewQuery = "DROP VIEW $viewName"
-    Write-Host $dropViewQuery
+    Write-Log -Level DEBUG -Message "Dropping view: $viewName"
 
-    try {
-        Invoke-DbaQuery -SqlInstance $SqlInstance -Database $TargetDB -Query $dropViewQuery
+    if(!$WhatIf){
+        try {
+                Invoke-DbaQuery -SqlInstance $SqlInstance -Database $TargetDB -Query $dropViewQuery
 
-        $logQuery = "INSERT INTO dbo.RestoreSchemaLogDetail (RestoreId, Step, ObjectType, ObjectSchema, ObjectName, Action, Command, ErrorCode, Message, LogDate)
-        VALUES ($RestoreId, 'DROP VIEW BEFORE TRUNCATE INSERT DATA', 'VIEW', '$($view.SchemaName)', '$($view.ViewName)', 'DROP', '$dropViewQuery', 0, 'Success', GETDATE())"
-        Invoke-DbaQuery -SqlInstance $LogInstance -Database $LogDatabase -Query $logQuery
+                $logQuery = "
+                INSERT INTO dbo.RestoreSchemaLogDetail (RestoreId, Step, ObjectType, ObjectSchema, ObjectName, Action, Command, ErrorCode, Message, LogDate)
+                VALUES ($RestoreId, 'DROP VIEW BEFORE DROP INSERT', 'VIEW', '$($view.SchemaName)', '$($view.ViewName)', 'DROP', '$dropViewQuery', 0, 'Success', GETDATE())
+                "
+                Invoke-DbaQuery -SqlInstance $LogInstance -Database $LogDatabase -Query $logQuery
         }
         catch {
             $errorMsg = $_.Exception.Message.Replace("'", "''")
-            $logQuery = "INSERT INTO dbo.RestoreSchemaLogDetail (RestoreId, Step, ObjectType, ObjectSchema, ObjectName, Action, Command, ErrorCode, Message, LogDate)
-            VALUES ($RestoreId, 'DROP VIEW BEFORE TRUNCATE INSERT DATA', 'VIEW', '$($view.SchemaName)', '$($view.ViewName)', 'DROP', '$dropViewQuery', 1, '$errorMsg', GETDATE())"
-            Invoke-DbaQuery -SqlInstance $LogInstance -Database $LogDatabase -Query $logQuery
-            $ErrorCode = 1
-        }
-    
-}
-
-#############################################################################################
-## DISABLED FOREIGN KEY TO TRUNCATE INSERT DATA
-#############################################################################################
-if($DebugParam){
-    Write-Host "DISABLED FOREIGN KEY TO TRUNCATE INSERT DATA"
-}
-
-# Get all foreign keys that reference a table in the schema
-$foreignKey = Invoke-DbaQuery -SqlInstance $SqlInstance -Database $TargetDB -Query "
-    SELECT
-        fk.name AS ForeignKeyName,
-        sch_parent.name AS ReferencingSchema,
-        t_parent.name AS ReferencingTable
-    FROM sys.foreign_keys fk
-        INNER JOIN sys.foreign_key_columns fkc ON fk.object_id = fkc.constraint_object_id
-        INNER JOIN sys.tables t_parent ON fkc.parent_object_id = t_parent.object_id
-        INNER JOIN sys.schemas sch_parent ON t_parent.schema_id = sch_parent.schema_id
-        INNER JOIN sys.tables t_ref ON fkc.referenced_object_id = t_ref.object_id
-        INNER JOIN sys.schemas sch_ref ON t_ref.schema_id = sch_ref.schema_id
-    WHERE sch_ref.name = '$SchemaName'
-"
-
-# drop the constraint for each foreign key
-foreach ($fk in $foreignKey) {
-    $schema = $fk.ReferencingSchema
-    $table = $fk.ReferencingTable
-    $fkName = $fk.ForeignKeyName
-
-    $query = "ALTER TABLE [$schema].[$table] DROP CONSTRAINT [$fkName];"
-    if($DebugParam){
-        Write-Host "ALTER TABLE [$schema].[$table] DROP CONSTRAINT [$fkName];"
-    }
-    if(!$WhatIf){
-        try {
-            Invoke-DbaQuery -SqlInstance $SqlInstance -Database $TargetDB -Query $query -EnableException
-
-            $logQuery = "INSERT INTO dbo.RestoreSchemaLogDetail (RestoreId, Step, ObjectType, ObjectSchema, ObjectName, Action, Command, ErrorCode, Message, LogDate)
-            VALUES ($RestoreId, 'DISABLED FOREIGN KEY TO TRUNCATE INSERT DATA', 'FOREIGN KEY', '$schema', '$fkName', 'DROP', '$($query.Replace("'", "''"))', 0, 'Success', GETDATE())
-            "
-            Invoke-DbaQuery -SqlInstance $LogInstance -Database $LogDatabase -Query $logQuery
-        }
-        catch {
-            $errorMsg = $_.Exception.Message.Replace("'", "''")  
             $logQuery = "
             INSERT INTO dbo.RestoreSchemaLogDetail (RestoreId, Step, ObjectType, ObjectSchema, ObjectName, Action, Command, ErrorCode, Message, LogDate)
-            VALUES ($RestoreId, 'DISABLED FOREIGN KEY TO TRUNCATE INSERT DATA', 'FOREIGN KEY', '$schema', '$fkName', 'DROP', '$($query.Replace("'", "''"))', 1, '$errorMsg', GETDATE())"
-                Invoke-DbaQuery -SqlInstance $LogInstance -Database $LogDatabase -Query $logQuery
-                $ErrorCode = 1
-            }         
+            VALUES ($RestoreId, 'DROP VIEW BEFORE DROP INSERT', 'VIEW', '$($view.SchemaName)', '$($view.ViewName)', 'DROP', '$dropViewQuery', 1, '$errorMsg', GETDATE())
+            "
+            Invoke-DbaQuery -SqlInstance $LogInstance -Database $LogDatabase -Query $logQuery
+            Write-Log -Level ERROR -Message "Failed to drop view $viewName : $errorMsg"
+            $ErrorCode = 1
+            if(!$ContinueOnError){
+                return
+            }
         }
+    }
 }
 
+
 #############################################################################################
-## DROP INSERT DATA
+## DISABLE FOREIGN KEYS TO ALLOW TRUNCATE/INSERT ON DEPENDENT TABLES
 #############################################################################################
-if($DebugParam){
-    Write-Host "DROP INSERT DATA"
+
+Write-Log -Level INFO -Message "STEP : DISABLING FOREIGN KEYS"
+
+# Step 1: Retrieve foreign keys referencing tables in the schema
+$foreignKey = Invoke-DbaQuery -SqlInstance $SqlInstance -Database $TargetDB -Query @"
+SELECT
+    fk.name AS ForeignKeyName,
+    sch_parent.name AS ReferencingSchema,
+    t_parent.name AS ReferencingTable
+FROM sys.foreign_keys fk
+    INNER JOIN sys.foreign_key_columns fkc ON fk.object_id = fkc.constraint_object_id
+    INNER JOIN sys.tables t_parent ON fkc.parent_object_id = t_parent.object_id
+    INNER JOIN sys.schemas sch_parent ON t_parent.schema_id = sch_parent.schema_id
+    INNER JOIN sys.tables t_ref ON fkc.referenced_object_id = t_ref.object_id
+    INNER JOIN sys.schemas sch_ref ON t_ref.schema_id = sch_ref.schema_id
+WHERE sch_ref.name = '$SchemaName'
+"@
+
+Write-Log -Level INFO -Message ("Found {0} foreign key(s) to disable." -f $foreignKey.Count)
+
+# Step 2: Initialize concurrent result tracking
+$fkDropResults = [System.Collections.Concurrent.ConcurrentDictionary[string, int]]::new()
+
+# Step 3: Parallel processing (write logs later)
+$foreignKey | ForEach-Object -Parallel {
+    $schema = $_.ReferencingSchema
+    $table  = $_.ReferencingTable
+    $fkName = $_.ForeignKeyName
+    $query  = "ALTER TABLE [$schema].[$table] DROP CONSTRAINT [$fkName];"
+    $queryLog = $query.Replace("'", "''")
+    $ErrorCode = 0
+
+    if (-not $using:WhatIf) {
+        try {
+            Invoke-DbaQuery -SqlInstance $using:SqlInstance -Database $using:TargetDB -Query $query -EnableException
+
+            $logQuery = "
+            INSERT INTO dbo.RestoreSchemaLogDetail
+            (RestoreId, Step, ObjectType, ObjectSchema, ObjectName, Action, Command, ErrorCode, Message, LogDate)
+            VALUES ($using:RestoreId, 'DISABLED FOREIGN KEY TO TRUNCATE INSERT DATA', 'FOREIGN KEY', '$schema', '$fkName', 'DROP', '$queryLog', 0, 'Success', GETDATE())
+            "
+            Invoke-DbaQuery -SqlInstance $using:LogInstance -Database $using:LogDatabase -Query $logQuery
+        }
+        catch {
+            $errorMsg = $_.Exception.Message.Replace("'", "''")
+            $ErrorCode = 1
+
+            $logQuery = "
+            INSERT INTO dbo.RestoreSchemaLogDetail
+            (RestoreId, Step, ObjectType, ObjectSchema, ObjectName, Action, Command, ErrorCode, Message, LogDate)
+            VALUES ($using:RestoreId, 'DISABLED FOREIGN KEY TO TRUNCATE INSERT DATA', 'FOREIGN KEY', '$schema', '$fkName', 'DROP', '$queryLog', 1, '$errorMsg', GETDATE())
+            "
+            Invoke-DbaQuery -SqlInstance $using:LogInstance -Database $using:LogDatabase -Query $logQuery
+        }
+    }
+
+    $dict = $using:fkDropResults
+    $null = $dict.TryAdd("$schema.$fkName", $ErrorCode)
+
+} -ThrottleLimit $Parallel
+
+
+$fkDropResults.GetEnumerator() | ForEach-Object {
+    $fk = $_.Key
+    $code = $_.Value
+
+    Write-Log -Level DEBUG -Message "Dropping foreign key: $fk"
+
+    if ($code -eq 1) {
+        Write-Log -Level ERROR -Message "Failed to drop foreign key: $fk"
+        $ErrorCode = 1
+        if (!$ContinueOnError){
+            return
+        }
+    }
 }
+
+
+#############################################################################################
+## DROP INSERT 
+#############################################################################################
+Write-Log -Level INFO -Message "STEP : DROP INSERT"
+
+$sourceTables = Get-DbaDbTable -SqlInstance $SqlInstance -Database $SourceDB -Schema $SchemaName
 
 # truncate insert data for each table
-foreach ($table in $sourceTables) {
-    $tableName = $table.TABLE_NAME
-    $qualifiedName = "[$SchemaName].[$tableName]"
+$sourceTables | ForEach-Object -Parallel {
+    $tableName = $_.Name
+    $qualifiedName = "[$using:SchemaName].[$tableName]"
+    $SqlInstance = $using:SqlInstance
+    $SourceDB = $using:SourceDB
+    $SchemaName = $using:SchemaName
+    $LogInstance = $using:LogInstance
+    $LogDatabase = $using:LogDatabase
+    $TargetDB = $using:TargetDB
+    $RestoreId = $using:RestoreId
     
 
-    $smoTable = Get-DbaDbTable -SqlInstance $SqlInstance -Database $SourceDB -Schema $SchemaName -Table $tableName
+    $objectTable = Get-DbaDbTable -SqlInstance $SqlInstance -Database $SourceDB -Schema $SchemaName -Table $tableName
     $dropQuery = "IF OBJECT_ID('$qualifiedName', 'U') IS NOT NULL DROP TABLE $qualifiedName"
 
     $dropQueryLog = $dropQuery.Replace("'", "''") -replace "`r`n", " " -replace "`n", " " -replace "`r", " "
 
-
-    # Truncate table
-    if ($DebugParam) {
-        Write-Host "$dropQuery"
-    }
     if (!$WhatIf) {
         try {
             Invoke-DbaQuery -SqlInstance $SqlInstance -Database $TargetDB -Query $dropQuery -EnableException
@@ -460,82 +390,53 @@ foreach ($table in $sourceTables) {
     }
 
     # 2. CREATE TABLE sans contraintes
-    $scripter = New-Object Microsoft.SqlServer.Management.Smo.Scripter ($smoServer)
-    $scripter.Options.ScriptDrops = $false
-    $scripter.Options.WithDependencies = $false
-    $scripter.Options.DriPrimaryKey = $false
-    $scripter.Options.DriUniqueKeys = $false
-    $scripter.Options.DriForeignKeys = $false
-    $scripter.Options.Indexes = $false
-    $scripter.Options.DriChecks = $true
+    
+    $options = New-DbaScriptingOption
+    $options.SchemaQualify = $true
+    $options.IncludeHeaders = $false
+    $options.ToFileOnly = $false
+    $options.WithDependencies = $false
+    $options.ScriptBatchTerminator = $true
+    $options.DriDefaults = $true
 
-
-    $createTableScript = $scripter.Script($smoTable) -join "`r`n"
-    $createTableScriptLog = $createTableScript.Replace("'", "''") -replace "`r`n", " " -replace "`n", " " -replace "`r", " "
-
+    $ScriptTable = $objectTable | Export-DbaScript -ScriptingOptionObject $options -NoPrefix -Passthru 
+    $scriptCleaned = $ScriptTable -join "`r`n"
+    $tableCommandLog = $scriptCleaned.Replace("'", "''") -replace "`r`n", " " -replace "`n", " " -replace "`r", " "
+    
+    
     try {
-        if (!$WhatIf) {
-            Invoke-DbaQuery -SqlInstance $SqlInstance -Database $TargetDB -Query $createTableScript -EnableException
+        Invoke-DbaQuery -SqlInstance $SqlInstance -Database $TargetDB -Query $scriptCleaned -EnableException
 
-            $logQuery = "
-            INSERT INTO dbo.RestoreSchemaLogDetail (RestoreId, Step, ObjectType, ObjectSchema, ObjectName, Action, Command, ErrorCode, Message, LogDate)
-            VALUES ($RestoreId, 'CREATE TABLE', 'TABLE', '$SchemaName', '$tableName', 'CREATE', '$createTableScriptLog', 0, 'Success', GETDATE())"
-            Invoke-DbaQuery -SqlInstance $LogInstance -Database $LogDatabase -Query $logQuery
-        }
+        $logQuery = "
+        INSERT INTO dbo.RestoreSchemaLogDetail (RestoreId, Step, ObjectType, ObjectSchema, ObjectName, Action, Command, ErrorCode, Message, LogDate)
+        VALUES ($RestoreId, 'CREATE TABLE', 'TABLE', '$SchemaName', '$tableName', 'CREATE', '$tableCommandLog', 0, 'Success', GETDATE())"
+        Invoke-DbaQuery -SqlInstance $LogInstance -Database $LogDatabase -Query $logQuery
     }
     catch {
         $errorMsg = $_.Exception.Message.Replace("'", "''")
         $logQuery = "
         INSERT INTO dbo.RestoreSchemaLogDetail (RestoreId, Step, ObjectType, ObjectSchema, ObjectName, Action, Command, ErrorCode, Message, LogDate)
-        VALUES ($RestoreId, 'CREATE TABLE', 'TABLE', '$SchemaName', '$tableName', 'CREATE', '$createTableScriptLog', 1, '$errorMsg', GETDATE())"
+        VALUES ($RestoreId, 'CREATE TABLE', 'TABLE', '$SchemaName', '$tableName', 'CREATE', '$tableCommandLog', 1, '$errorMsg', GETDATE())"
         Invoke-DbaQuery -SqlInstance $LogInstance -Database $LogDatabase -Query $logQuery
         $ErrorCode = 1
         continue  # On ne tente pas de créer les index si la vue échoue
     }
-
-    # 5. Création des contraintes par défaut (Default Constraints)
-    $defaultConstraints = $smoTable.Columns | Where-Object { $_.DefaultConstraint -ne $null }
-
-    foreach ($col in $defaultConstraints) {
-        $df = $col.DefaultConstraint
-        $dfScript = $scripter.Script($df) -join "`r`n"
-        $dfScriptLog = $dfScript.Replace("'", "''") -replace "`r`n", " " -replace "`n", " " -replace "`r", " "
-
-        try {
-            if (!$WhatIf) {
-                Invoke-DbaQuery -SqlInstance $SqlInstance -Database $TargetDB -Query $dfScript -EnableException
-
-                $logQuery = "
-                INSERT INTO dbo.RestoreSchemaLogDetail (RestoreId, Step, ObjectType, ObjectSchema, ObjectName, Action, Command, ErrorCode, Message, LogDate)
-                VALUES ($RestoreId, 'CREATE DEFAULT CONSTRAINT', 'CONSTRAINT', '$SchemaName', '$($df.Name)', 'CREATE', '$dfScriptLog', 0, 'Success', GETDATE())"
-                Invoke-DbaQuery -SqlInstance $LogInstance -Database $LogDatabase -Query $logQuery
-            }
-        } catch {
-            $errorMsg = $_.Exception.Message.Replace("'", "''")
-            $logQuery = "
-            INSERT INTO dbo.RestoreSchemaLogDetail (RestoreId, Step, ObjectType, ObjectSchema, ObjectName, Action, Command, ErrorCode, Message, LogDate)
-            VALUES ($RestoreId, 'CREATE DEFAULT CONSTRAINT', 'CONSTRAINT', '$SchemaName', '$($df.Name)', 'CREATE', '$dfScriptLog', 1, '$errorMsg', GETDATE())"
-            Invoke-DbaQuery -SqlInstance $LogInstance -Database $LogDatabase -Query $logQuery
-            $ErrorCode = 1
-        }
-    }
-
+   
+    $columnstoreIndexes = $objectTable.Indexes | Where-Object { $_.IndexType -like "ClusteredColumnStoreIndex" }
     # 4. Création index Cluster Columnstore s’il y en a
-    $smoIndexes = $smoTable.Indexes | Where-Object { $_.IndexType -eq 'ClusteredColumnstoreIndex' }
-    foreach ($index in $smoIndexes) {
-        $indexScript = $scripter.Script($index) -join "`r`n"
-        $indexScriptLog = $indexScript.Replace("'", "''") -replace "`r`n", " " -replace "`n", " " -replace "`r", " "
-        
+    foreach ($indexCCI in $columnstoreIndexes) {
+        $ScriptTableIndexCCI = $indexCCI | Export-DbaScript -Passthru -NoPrefix 
+        $scriptCleaned = $ScriptTableIndexCCI -join "`r`n"
+        $tableIndexCCICommandLog = $scriptCleaned.Replace("'", "''") -replace "`r`n", " " -replace "`n", " " -replace "`r", " "
+
         try {
             # Tenter de créer l'index sur la base cible
             if (!$WhatIf) {
-                Invoke-DbaQuery -SqlInstance $SqlInstance -Database $TargetDB -Query $indexScript -EnableException
+                Invoke-DbaQuery -SqlInstance $SqlInstance -Database $TargetDB -Query $scriptCleaned -EnableException
             
-                # Log de succès
-                $indexScriptLog = $indexScript.Replace("'", "''") -replace "`r`n", " " -replace "`n", " " -replace "`r", " "
                 $logQuery = "
                 INSERT INTO dbo.RestoreSchemaLogDetail (RestoreId, Step, ObjectType, ObjectSchema, ObjectName, Action, Command, ErrorCode, Message, LogDate)
-                VALUES ($RestoreId, 'CREATE INDEX', 'INDEX', '$SchemaName', '$($index.Name)', 'CREATE', '$indexScriptLog', 0, 'Success', GETDATE())"
+                VALUES ($RestoreId, 'CREATE INDEX', 'INDEX', '$SchemaName', '$($indexCCI.Name)', 'CREATE', '$tableIndexCCICommandLog', 0, 'Success', GETDATE())"
                 
                 Invoke-DbaQuery -SqlInstance $LogInstance -Database $LogDatabase -Query $logQuery
             }
@@ -544,7 +445,7 @@ foreach ($table in $sourceTables) {
             $errorMsg = $_.Exception.Message.Replace("'", "''")
             $logQuery = "
             INSERT INTO dbo.RestoreSchemaLogDetail (RestoreId, Step, ObjectType, ObjectSchema, ObjectName, Action, Command, ErrorCode, Message, LogDate)
-            VALUES ($RestoreId, 'CREATE INDEX', 'INDEX', '$SchemaName', '$($index.Name)', 'CREATE', '$indexScriptLog', 1, '$errorMsg', GETDATE())"
+            VALUES ($RestoreId, 'CREATE INDEX', 'INDEX', '$SchemaName', '$($indexCCI.Name)', 'CREATE', '$tableIndexCCICommandLog', 1, '$errorMsg', GETDATE())"
             
             Invoke-DbaQuery -SqlInstance $LogInstance -Database $LogDatabase -Query $logQuery
             $ErrorCode = 1
@@ -590,8 +491,6 @@ foreach ($table in $sourceTables) {
 
 
     try {
-        
-
         if (!$WhatIf) {
             Invoke-DbaQuery -SqlInstance $SqlInstance -Database $TargetDB -Query $fullInsert -EnableException
 
@@ -613,19 +512,20 @@ foreach ($table in $sourceTables) {
     }
 
     # 6. Création des autres index (hors Cluster Columnstore déjà créés)
-    $remainingIndexes = $smoTable.Indexes | Where-Object { $_.IndexType -ne 'ClusteredColumnstoreIndex' }
+    $remainingIndexes = $objectTable.Indexes | Where-Object { $_.IndexType -ne 'ClusteredColumnstoreIndex' }
 
     foreach ($index in $remainingIndexes) {
-        $indexScript = $scripter.Script($index) -join "`r`n"
+        $ScriptTableIndex = $index | Export-DbaScript -Passthru -NoPrefix 
+        $scriptCleaned = $ScriptTableIndex -join "`r`n"
+        $tableIndexCommandLog = $scriptCleaned.Replace("'", "''") -replace "`r`n", " " -replace "`n", " " -replace "`r", " "
 
-        $indexScriptLog = $indexScript.Replace("'", "''") -replace "`r`n", " " -replace "`n", " " -replace "`r", " "
         try {
             if (!$WhatIf) {
-                Invoke-DbaQuery -SqlInstance $SqlInstance -Database $TargetDB -Query $indexScript -EnableException
+                Invoke-DbaQuery -SqlInstance $SqlInstance -Database $TargetDB -Query $scriptCleaned -EnableException
 
                 $logQuery = "
                 INSERT INTO dbo.RestoreSchemaLogDetail (RestoreId, Step, ObjectType, ObjectSchema, ObjectName, Action, Command, ErrorCode, Message, LogDate)
-                VALUES ($RestoreId, 'CREATE INDEX', 'INDEX', '$SchemaName', '$($index.Name)', 'CREATE', '$indexScriptLog', 0, 'Success', GETDATE())"
+                VALUES ($RestoreId, 'CREATE INDEX', 'INDEX', '$SchemaName', '$($index.Name)', 'CREATE', '$tableIndexCommandLog', 0, 'Success', GETDATE())"
                 Invoke-DbaQuery -SqlInstance $LogInstance -Database $LogDatabase -Query $logQuery
             }
 
@@ -634,36 +534,59 @@ foreach ($table in $sourceTables) {
             $errorMsg = $_.Exception.Message.Replace("'", "''")
             $logQuery = "
             INSERT INTO dbo.RestoreSchemaLogDetail (RestoreId, Step, ObjectType, ObjectSchema, ObjectName, Action, Command, ErrorCode, Message, LogDate)
-            VALUES ($RestoreId, 'CREATE INDEX', 'INDEX', '$SchemaName', '$($index.Name)', 'CREATE', '$indexScriptLog', 1, '$errorMsg', GETDATE())"
+            VALUES ($RestoreId, 'CREATE INDEX', 'INDEX', '$SchemaName', '$($index.Name)', 'CREATE', '$tableIndexCommandLog', 1, '$errorMsg', GETDATE())"
             Invoke-DbaQuery -SqlInstance $LogInstance -Database $LogDatabase -Query $logQuery
 
             $ErrorCode = 1
         }
     }
 
+    foreach ($ckConstraint in $objectTable.Checks) {
+        $ScriptTableCkConstraint = $ckConstraint | Export-DbaScript -Passthru -NoPrefix 
+        $scriptCleaned = $ScriptTableCkConstraint -join "`r`n"
+        $tableCkConstraintCommandLog = $scriptCleaned.Replace("'", "''") -replace "`r`n", " " -replace "`n", " " -replace "`r", " "
+
+        try {
+            if (!$WhatIf) {
+                Invoke-DbaQuery -SqlInstance $SqlInstance -Database $TargetDB -Query $scriptCleaned -EnableException
+
+                $logQuery = "
+                INSERT INTO dbo.RestoreSchemaLogDetail (RestoreId, Step, ObjectType, ObjectSchema, ObjectName, Action, Command, ErrorCode, Message, LogDate)
+                VALUES ($RestoreId, 'CREATE CHECK CONSTRAINT', 'CONSTRAINT', '$SchemaName', '$($ckConstraint.Name)', 'CREATE', '$tableCkConstraintCommandLog', 0, 'Success', GETDATE())"
+                Invoke-DbaQuery -SqlInstance $LogInstance -Database $LogDatabase -Query $logQuery
+            }
+        } catch {
+            $errorMsg = $_.Exception.Message.Replace("'", "''")
+            $logQuery = "
+            INSERT INTO dbo.RestoreSchemaLogDetail (RestoreId, Step, ObjectType, ObjectSchema, ObjectName, Action, Command, ErrorCode, Message, LogDate)
+            VALUES ($RestoreId, 'CREATE CHECK CONSTRAINT', 'CONSTRAINT', '$SchemaName', '$($ckConstraint.Name)', 'CREATE', '$tableCkConstraintCommandLog', 1, '$errorMsg', GETDATE())"
+            Invoke-DbaQuery -SqlInstance $LogInstance -Database $LogDatabase -Query $logQuery
+            $ErrorCode = 1
+        }
+    }
+
     # 6. Création des triggers
-    foreach ($trigger in $smoTable.Triggers) {
+    foreach ($trigger in $objectTable.Triggers) {
         if ($trigger.IsSystemObject -eq $false) {
-            $triggerScript = $scripter.Script($trigger) -join "`r`n"
+            $ScriptTableTrigger = $trigger | Export-DbaScript -Passthru -NoPrefix 
+            $scriptCleaned = $ScriptTableTrigger -join "`r`n"
+            $tableTriggerCommandLog = $scriptCleaned.Replace("'", "''") -replace "`r`n", " " -replace "`n", " " -replace "`r", " "
 
-            $createTrigger = $triggerScript.IndexOf("CREATE TRIGGER", [System.StringComparison]::OrdinalIgnoreCase)
-            $triggerScriptCleaned = $triggerScript.Substring($createTrigger)
-            $triggerScriptLog = $triggerScriptCleaned.Replace("'", "''") -replace "`r`n", " " -replace "`n", " " -replace "`r", " "
-
+            
             try {
                 if (!$WhatIf) {
-                    Invoke-DbaQuery -SqlInstance $SqlInstance -Database $TargetDB -Query $triggerScriptCleaned -EnableException
+                    Invoke-DbaQuery -SqlInstance $SqlInstance -Database $TargetDB -Query $scriptCleaned -EnableException
 
                     $logQuery = "
                     INSERT INTO dbo.RestoreSchemaLogDetail (RestoreId, Step, ObjectType, ObjectSchema, ObjectName, Action, Command, ErrorCode, Message, LogDate)
-                    VALUES ($RestoreId, 'CREATE TRIGGER', 'TRIGGER', '$SchemaName', '$($trigger.Name)', 'CREATE', '$triggerScriptLog', 0, 'Success', GETDATE())"
+                    VALUES ($RestoreId, 'CREATE TRIGGER', 'TRIGGER', '$SchemaName', '$($trigger.Name)', 'CREATE', '$tableTriggerCommandLog', 0, 'Success', GETDATE())"
                     Invoke-DbaQuery -SqlInstance $LogInstance -Database $LogDatabase -Query $logQuery
                 }
             } catch {
                 $errorMsg = $_.Exception.Message.Replace("'", "''")
                 $logQuery = "
                 INSERT INTO dbo.RestoreSchemaLogDetail (RestoreId, Step, ObjectType, ObjectSchema, ObjectName, Action, Command, ErrorCode, Message, LogDate)
-                VALUES ($RestoreId, 'CREATE TRIGGER', 'TRIGGER', '$SchemaName', '$($trigger.Name)', 'CREATE', '$triggerScriptLog', 1, '$errorMsg', GETDATE())"
+                VALUES ($RestoreId, 'CREATE TRIGGER', 'TRIGGER', '$SchemaName', '$($trigger.Name)', 'CREATE', '$tableTriggerCommandLog', 1, '$errorMsg', GETDATE())"
                 Invoke-DbaQuery -SqlInstance $LogInstance -Database $LogDatabase -Query $logQuery
                 $ErrorCode = 1
             }
@@ -671,69 +594,124 @@ foreach ($table in $sourceTables) {
     }
 
 
-}
+} -ThrottleLimit $Parallel
+
 
 
 
 #############################################################################################
 ## ENABLED FOREIGN KEY 
 #############################################################################################
-if ($DebugParam) {
-    Write-Host "ENABLED FOREIGN KEY CONSTRAINT"
-}
 
-# Récupération des FK à rétablir (celles qui pointent vers les tables du schéma cible)
+Write-Log -Level INFO -Message "STEP : ENABLING FOREIGN KEY CONSTRAINTS"
+
+# Étape 1 : Récupération des FK à rétablir
 $foreignKeyNames = Invoke-DbaQuery -SqlInstance $SqlInstance -Database $SourceDB -Query "
-    SELECT
-    fk.name AS ForeignKeyName
+    SELECT fk.name AS ForeignKeyName
     FROM sys.foreign_keys fk
     INNER JOIN sys.foreign_key_columns fkc ON fk.object_id = fkc.constraint_object_id
     INNER JOIN sys.tables t_parent ON fkc.parent_object_id = t_parent.object_id
     INNER JOIN sys.schemas sch_parent ON t_parent.schema_id = sch_parent.schema_id
     INNER JOIN sys.tables t_ref ON fkc.referenced_object_id = t_ref.object_id
     INNER JOIN sys.schemas sch_ref ON t_ref.schema_id = sch_ref.schema_id
-    WHERE sch_parent.name = '$SchemaName'
-    OR sch_ref.name = '$SchemaName'
+    WHERE sch_parent.name = '$SchemaName' OR sch_ref.name = '$SchemaName'
 "
-# Récupération des objets FK avec SMO
+
+# Étape 2 : Obtenir les objets FK
 $foreignKeyObjects = Get-DbaDbForeignKey -SqlInstance $SqlInstance -Database $SourceDB |
     Where-Object { $_.Name -in $foreignKeyNames.ForeignKeyName }
 
-if (!$WhatIf) {
-    foreach ($fk in $foreignKeyObjects) {
+# Étape 3 : Génération des scripts FK
+$options = New-DbaScriptingOption
+$options.SchemaQualify = $true
+$options.IncludeHeaders = $false
+$options.ToFileOnly = $false
+$options.WithDependencies = $false
+$options.ScriptBatchTerminator = $true
+
+$fkScripts = @()
+
+foreach ($fk in $foreignKeyObjects) {
+    try {
+        $scriptFkLines = $fk | Export-DbaScript -ScriptingOptionObject $options -NoPrefix -Passthru
+        $scriptFk = $scriptFkLines -join "`r`n"
+
+        $fkScripts += [pscustomobject]@{
+            Schema = $fk.Parent.Schema
+            Table  = $fk.Parent.Name
+            Name   = $fk.Name
+            Script = $scriptFk
+        }
+    } catch {
+        Write-Log -Level WARNING -Message "Erreur lors de la génération du script FK '$($fk.Name)' : $($_.Exception.Message)"
+    }
+}
+
+Write-Log -Level INFO -Message ("Found {0} foreign key(s) to enable" -f $foreignKeyObjects.Count)
+
+
+# Étape 4 : Execution parallèle avec dictionnaire thread-safe
+$fkEnableResults = [System.Collections.Concurrent.ConcurrentDictionary[string, int]]::new()
+
+$fkScripts | ForEach-Object -Parallel {
+    $ErrorCode = 0
+    $fkName = $_.Name
+    $schema = $_.Schema
+    $table = $_.Table
+    $script = $_.Script
+    $cleanedScript = $script -join "`r`n"
+    $fkCommandLog = $script.Replace("'", "''") -replace "`r`n", " " -replace "`n", " " -replace "`r", " "
+
+    if (!$WhatIf) {
         try {
-            $scriptParts = $fk.Script()
-            $scriptText = $scriptParts -join "`r`n"
-
-            # Logging SQL propre
-            $commandLog = $scriptText.Replace("'", "''") -replace "`r`n", " " -replace "`n", " " -replace "`r", " "
-
-            # Exécution
-            Invoke-DbaQuery -SqlInstance $SqlInstance -Database $TargetDB -Query $scriptText -EnableException
+            Invoke-DbaQuery -SqlInstance $using:SqlInstance -Database $using:TargetDB -Query $cleanedScript -EnableException
 
             $logQuery = "
-            INSERT INTO dbo.RestoreSchemaLogDetail (RestoreId, Step, ObjectType, ObjectSchema, ObjectName, Action, Command, ErrorCode, Message, LogDate)
-            VALUES($RestoreId, 'ENABLED FOREIGN KEY CONSTRAINT', 'FOREIGN KEY', '$($fk.Parent.Schema)', '$($fk.Parent.Name)', 'ALTER', '$commandLog', 0, 'Success', GETDATE())
-            "
-            Invoke-DbaQuery -SqlInstance $LogInstance -Database $LogDatabase -Query $logQuery
+            INSERT INTO dbo.RestoreSchemaLogDetail
+            (RestoreId, Step, ObjectType, ObjectSchema, ObjectName, Action, Command, ErrorCode, Message, LogDate)
+            VALUES ($using:RestoreId, 'ENABLED FOREIGN KEY CONSTRAINT', 'FOREIGN KEY', '$schema', '$fkName', 'ALTER', '$fkCommandLog', 0, 'Success', GETDATE())"
+            Invoke-DbaQuery -SqlInstance $using:LogInstance -Database $using:LogDatabase -Query $logQuery
         } catch {
             $errorMsg = $_.Exception.Message.Replace("'", "''")
+            $ErrorCode = 1
 
             $logQuery = "
-            INSERT INTO dbo.RestoreSchemaLogDetail (RestoreId, Step, ObjectType, ObjectSchema, ObjectName, Action, Command, ErrorCode, Message, LogDate)
-            VALUES ($RestoreId, 'ENABLED FOREIGN KEY CONSTRAINT', 'FOREIGN KEY', '$($fk.Parent.Schema)', '$($fk.Parent.Name)', 'ALTER', '$commandLog', 1, '$errorMsg', GETDATE())
-            "
-            Invoke-DbaQuery -SqlInstance $LogInstance -Database $LogDatabase -Query $logQuery
-            $ErrorCode = 1
+            INSERT INTO dbo.RestoreSchemaLogDetail
+            (RestoreId, Step, ObjectType, ObjectSchema, ObjectName, Action, Command, ErrorCode, Message, LogDate)
+            VALUES ($using:RestoreId, 'ENABLED FOREIGN KEY CONSTRAINT', 'FOREIGN KEY', '$schema', '$fkName', 'ALTER', '$fkCommandLog', 1, '$errorMsg', GETDATE())"
+            Invoke-DbaQuery -SqlInstance $using:LogInstance -Database $using:LogDatabase -Query $logQuery
+        }
+    }
+
+    $dict = $using:fkEnableResults
+    $null = $dict.TryAdd($fkName, $ErrorCode)
+
+} -ThrottleLimit $Parallel
+
+# Étape 5 : Log des résultats
+foreach ($entry in $fkEnableResults.GetEnumerator()) {
+    $fkName = $entry.Key
+    $code = $entry.Value
+
+    Write-Log -Level DEBUG -Message "Enabling FK [$fkName]"
+
+    if ($code -eq 1) {
+        Write-Log -Level ERROR -Message "Failed to enable foreign key [$fkName]"
+        $ErrorCode = 1
+        if(!$ContinueOnError){
+            return
         }
     }
 }
 
 
 #############################################################################################
-## CREATE VIEW AFTER TRUNCATE INSERT DATA
+## CREATE VIEW AFTER DROP INSERT
 #############################################################################################
-# --- ÉTAPE 1 : Récupérer les vues du schéma ---
+
+Write-Log -Level INFO -Message "STEP : CREATE VIEW AFTER DROP INSERT"
+
+# Step 1: Retrieve views from source schema
 $viewsSource = Invoke-DbaQuery -SqlInstance $SqlInstance -Database $SourceDB -Query @"
 SELECT 
     s.name AS SchemaName,
@@ -746,14 +724,15 @@ JOIN sys.schemas s ON s.schema_id = v.schema_id
 WHERE s.name = '$SchemaName'
 "@
 
+Write-Log -Level INFO -Message ("Found {0} views to create from source schema '{1}'." -f $viewsSource.Count, $SchemaName)
 
-# --- Étape 1 : Construire un dictionnaire (nom complet => objet vue)
+# Step 2: Create view dictionary
 $viewDictSource = @{}
 foreach ($view in $viewsSource) {
     $viewDictSource[$view.FullName] = $view
 }
 
-# --- Étape 2 : Obtenir toutes les dépendances entre vues
+# Step 3: Get dependencies between views
 $dependenciesSource = Invoke-DbaQuery -SqlInstance $SqlInstance -Database $SourceDB -Query @"
 SELECT 
     OBJECT_SCHEMA_NAME(referencing_id) + '.' + OBJECT_NAME(referencing_id) AS Referencer,
@@ -764,13 +743,13 @@ WHERE
     AND OBJECTPROPERTY(referenced_id, 'IsView') = 1
 "@
 
-# --- Étape 3 : Filtrer les dépendances internes
+# Step 4: Filter internal dependencies
 $viewNamesSource = $viewDictSource.Keys
 $internalDepsSource = $dependenciesSource | Where-Object {
     $_.Referencer -in $viewNamesSource -and $_.Referenced -in $viewNamesSource
 }
 
-# --- Étape 4 : Construire graphe + in-degree
+# Step 5: Topological sort (Kahn)
 $graph = @{}
 $inDegree = @{}
 
@@ -784,8 +763,7 @@ foreach ($dep in $internalDepsSource) {
     $inDegree[$dep.Referencer]++
 }
 
-# --- Étape 5 : Tri topologique (Kahn)
-$queue = New-Object System.Collections.Generic.Queue[string]
+$queue = [System.Collections.Generic.Queue[string]]::new()
 $inDegree.Keys | Where-Object { $inDegree[$_] -eq 0 } | ForEach-Object { $queue.Enqueue($_) }
 
 $sortedSource = @()
@@ -802,190 +780,234 @@ while ($queue.Count -gt 0) {
     }
 }
 
-# --- Étape 6 : Vérification cycle
 if ($sortedSource.Count -ne $viewNamesSource.Count) {
-    Write-Error "⚠️ Cycle détecté dans les dépendances entre vues."
+    Write-Log -Level ERROR -Message "Cycle detected in view dependencies. Cannot safely recreate views."
     return
 }
 
-# --- Étape 7 : Inverser pour DROP
 $sortedSource = [System.Collections.ArrayList]::new($sortedSource)
 
+# Step 6: Scripting options
+$options = New-DbaScriptingOption
+$options.SchemaQualify = $true
+$options.IncludeHeaders = $false
+$options.ToFileOnly = $false
+$options.Indexes = $true  
+$options.WithDependencies = $false
+$options.ScriptBatchTerminator = $true
 
-$scripter = New-Object Microsoft.SqlServer.Management.Smo.Scripter ($smoServer)
-$scripter.Options.SchemaQualify = $true
-$scripter.Options.IncludeHeaders = $false
-$scripter.Options.ToFileOnly = $false
-$scripter.Options.Indexes = $false
-$scripter.Options.WithDependencies = $false
-
+# Step 7: Recreate each view
 foreach ($index in 0..($sortedSource.Count - 1)) {
     $viewName = $sortedSource[$index]
     $view = $viewDictSource[$viewName]
-    $smoView = $smoDb.Views[$view.ViewName, $view.SchemaName]
 
-    if ($smoView -eq $null) {
-        Write-Warning "Vue $($view.SchemaName).$($view.ViewName) non trouvée dans SMO."
-        continue
-    }
+    Write-Log -Level DEBUG -Message "Creating view [$($view.SchemaName).$($view.ViewName)]"
 
-    
-    # ░░░ STEP 1 : CREATE VIEW
-    $scriptViewOnly = $scripter.Script($smoView) -join "`r`n"
+    $ScriptViewAndIndex = Get-DbaDbView -SqlInstance $SqlInstance -Database $SourceDB -View "$($view.ViewName)" |
+        Where-Object { $_.Schema -eq $view.SchemaName } |
+        Export-DbaScript -ScriptingOptionObject $options -NoPrefix -Passthru 
 
-    # Delete everything before CREATE VIEW
-    $createViewIndex = $scriptViewOnly.IndexOf('CREATE VIEW')
-    $cleanedScript = $scriptViewOnly.Substring($createViewIndex)
-    
+    $cleanedScript = $ScriptViewAndIndex -join "`r`n"
     $viewCommandLog = $cleanedScript.Replace("'", "''") -replace "`r`n", " " -replace "`n", " " -replace "`r", " "
 
-    try {
-        if (!$WhatIf) {
+    if (!$WhatIf) {
+        try {
             Invoke-DbaQuery -SqlInstance $SqlInstance -Database $TargetDB -Query $cleanedScript -EnableException
 
             $logQuery = "
-            INSERT INTO dbo.RestoreSchemaLogDetail (RestoreId, Step, ObjectType, ObjectSchema, ObjectName, Action, Command, ErrorCode, Message, LogDate)
-            VALUES ($RestoreId, 'CREATE VIEW', 'VIEW', '$($view.SchemaName)', '$($view.ViewName)', 'CREATE', '$viewCommandLog', 0, 'Success', GETDATE())"
+            INSERT INTO dbo.RestoreSchemaLogDetail
+            (RestoreId, Step, ObjectType, ObjectSchema, ObjectName, Action, Command, ErrorCode, Message, LogDate)
+            VALUES ($RestoreId, 'CREATE VIEW', 'VIEW', '$($view.SchemaName)', '$($view.ViewName)', 'CREATE', '$viewCommandLog', 0, 'Success', GETDATE())
+            "
             Invoke-DbaQuery -SqlInstance $LogInstance -Database $LogDatabase -Query $logQuery
-        }
-    }
-    catch {
-        $errorMsg = $_.Exception.Message.Replace("'", "''")
-        $logQuery = "
-        INSERT INTO dbo.RestoreSchemaLogDetail (RestoreId, Step, ObjectType, ObjectSchema, ObjectName, Action, Command, ErrorCode, Message, LogDate)
-        VALUES ($RestoreId, 'CREATE VIEW', 'VIEW', '$($view.SchemaName)', '$($view.ViewName)', 'CREATE', '$viewCommandLog', 1, '$errorMsg', GETDATE())"
-        Invoke-DbaQuery -SqlInstance $LogInstance -Database $LogDatabase -Query $logQuery
-        $ErrorCode = 1
-        continue  # On ne tente pas de créer les index si la vue échoue
-    }
-
-    # ░░░ STEP 2 : CREATE INDEXES (un par un, avec try/catch)
-    foreach ($indexObj in $smoView.Indexes) {
-        $scriptIndex = $scripter.Script($indexObj) -join "`r`n"
-        $indexCommandLog = $scriptIndex.Replace("'", "''") -replace "`r`n", " " -replace "`n", " " -replace "`r", " "
-
-        try {
-            if (!$WhatIf) {
-                Invoke-DbaQuery -SqlInstance $SqlInstance -Database $TargetDB -Query $scriptIndex -EnableException
-
-                $logQuery = "
-                INSERT INTO dbo.RestoreSchemaLogDetail (RestoreId, Step, ObjectType, ObjectSchema, ObjectName, Action, Command, ErrorCode, Message, LogDate)
-                VALUES ($RestoreId, 'CREATE INDEX ON VIEW', 'INDEX', '$($view.SchemaName)', '$($indexObj.Name)', 'CREATE', '$indexCommandLog', 0, 'Success', GETDATE())"
-                Invoke-DbaQuery -SqlInstance $LogInstance -Database $LogDatabase -Query $logQuery
-            }
         }
         catch {
             $errorMsg = $_.Exception.Message.Replace("'", "''")
+
             $logQuery = "
-            INSERT INTO dbo.RestoreSchemaLogDetail (RestoreId, Step, ObjectType, ObjectSchema, ObjectName, Action, Command, ErrorCode, Message, LogDate)
-            VALUES ($RestoreId, 'CREATE INDEX ON VIEW', 'INDEX', '$($view.SchemaName)', '$($indexObj.Name)', 'CREATE', '$indexCommandLog', 1, '$errorMsg', GETDATE())"
+            INSERT INTO dbo.RestoreSchemaLogDetail
+            (RestoreId, Step, ObjectType, ObjectSchema, ObjectName, Action, Command, ErrorCode, Message, LogDate)
+            VALUES ($RestoreId, 'CREATE VIEW', 'VIEW', '$($view.SchemaName)', '$($view.ViewName)', 'CREATE', '$viewCommandLog', 1, '$errorMsg', GETDATE())
+            "
             Invoke-DbaQuery -SqlInstance $LogInstance -Database $LogDatabase -Query $logQuery
+
+            Write-Log -Level ERROR -Message "Failed to create view [$($view.SchemaName).$($view.ViewName)] : $errorMsg"
             $ErrorCode = 1
+            if(!$ContinueOnError){
+                return
+            }
         }
     }
 }
 
 
+#############################################################################################
+## DROP PROCEDURES
+#############################################################################################
 
-#############################################################################################
-## CREATE/ALTER PROCEDURES
-#############################################################################################
-if ($DebugParam) {
-    Write-Host "CREATE/ALTER PROCEDURES"
+Write-Log -Level INFO -Message "STEP : DROP PROCEDURES"
+
+# Retrieve stored procedures from target schema
+$procsToDelete = Get-DbaDbStoredProcedure -SqlInstance $SqlInstance -Database $TargetDB | Where-Object { $_.Schema -eq $SchemaName }
+
+Write-Log -Level INFO -Message ("Found {0} procedures to drop in target schema '{1}'." -f $procsToDelete.Count, $SchemaName)
+# Parallel-safe dictionary to store drop results
+$procDropResults = [System.Collections.Concurrent.ConcurrentDictionary[string, int]]::new()
+
+# Drop procedures in parallel
+$procsToDelete | ForEach-Object -Parallel {
+    $ErrorCode = 0
+    $procSchema = $_.Schema
+    $procName = $_.Name
+    $qualifiedName = "[$procSchema].[$procName]"
+    
+    $dropQuery = "IF OBJECT_ID(N'$qualifiedName', N'P') IS NOT NULL DROP PROCEDURE $qualifiedName;"
+    $dropQueryLog = $dropQuery.Replace("'", "''") -replace "`r`n", " " -replace "`n", " " -replace "`r", " "
+
+    if (!$WhatIf) {
+        try {
+            Invoke-DbaQuery -SqlInstance $using:SqlInstance -Database $using:TargetDB -Query $dropQuery -EnableException
+
+            $logQuery = "
+            INSERT INTO dbo.RestoreSchemaLogDetail (RestoreId, Step, ObjectType, ObjectSchema, ObjectName, Action, Command, ErrorCode, Message, LogDate)
+            VALUES ($using:RestoreId, 'DROP PROCEDURE', 'PROCEDURE', '$procSchema', '$procName', 'DROP', '$dropQueryLog', 0, 'Success', GETDATE())
+            "
+            Invoke-DbaQuery -SqlInstance $using:LogInstance -Database $using:LogDatabase -Query $logQuery
+        } catch {
+            $errorMsg = $_.Exception.Message.Replace("'", "''")
+
+            $logQuery = "
+            INSERT INTO dbo.RestoreSchemaLogDetail (RestoreId, Step, ObjectType, ObjectSchema, ObjectName, Action, Command, ErrorCode, Message, LogDate)
+            VALUES ($using:RestoreId, 'DROP PROCEDURE', 'PROCEDURE', '$procSchema', '$procName', 'DROP', '$dropQueryLog', 1, '$errorMsg', GETDATE())
+            "
+            Invoke-DbaQuery -SqlInstance $using:LogInstance -Database $using:LogDatabase -Query $logQuery
+            $ErrorCode = 1
+        }
+    }
+
+    $dict = $using:procDropResults
+    $null = $dict.TryAdd($procName, $ErrorCode)
+
+} -ThrottleLimit $Parallel
+
+foreach ($entry in $procDropResults.GetEnumerator()) {
+    $procName = $entry.Key
+    $code = $entry.Value
+
+    Write-Log -Level DEBUG -Message "Dropping procedure [$procName]"
+
+    if ($code -eq 1) {
+        Write-Log -Level ERROR -Message "Failed to drop procedure [$procName]."
+        $ErrorCode = 1
+        if(!$ContinueOnError){
+            return
+        }
+    }
 }
 
-# Get procedures in the schema
+
+#############################################################################################
+## CREATE PROCEDURES
+#############################################################################################
+
+Write-Log -Level INFO -Message "STEP : CREATE PROCEDURES"
+
+# Get procedures from source
 $storedProcedures = Get-DbaDbStoredProcedure -SqlInstance $SqlInstance -Database $SourceDB | Where-Object { $_.Schema -eq $SchemaName }
 
-if (!$WhatIf) {
-    foreach ($proc in $storedProcedures) {
-        $procSchema = $proc.Schema
-        $procName = $proc.Name
-        $qualifiedName = "[$procSchema].[$procName]"
+Write-Log -Level INFO -Message ("Found {0} procedures to create from source schema '{1}'." -f $storedProcedures.Count, $SchemaName)
 
-        $dropQuery = "IF OBJECT_ID(N'$qualifiedName', N'P') IS NOT NULL DROP PROCEDURE $qualifiedName;"
-        $dropQueryLog = $dropQuery.Replace("'", "''") -replace "`r`n", " " -replace "`n", " " -replace "`r", " "
-        # DROP PROCEDURE
-        try {
-            Invoke-DbaQuery -SqlInstance $SqlInstance -Database $TargetDB -Query $dropQuery -EnableException
+# Scripting options
+$options = New-DbaScriptingOption
+$options.SchemaQualify = $true
+$options.IncludeHeaders = $false
+$options.ToFileOnly = $false 
+$options.WithDependencies = $false
+$options.ScriptBatchTerminator = $true
 
-            $logQuery = "
-            INSERT INTO dbo.RestoreSchemaLogDetail (RestoreId, Step, ObjectType, ObjectSchema, ObjectName, Action, Command, ErrorCode, Message, LogDate)
-            VALUES ($RestoreId, 'DROP PROCEDURE', 'PROCEDURE', '$procSchema', '$procName', 'DROP', '$dropQueryLog', 0, 'Success', GETDATE())
-            "
-            Invoke-DbaQuery -SqlInstance $LogInstance -Database $LogDatabase -Query $logQuery
-        } catch {
-            $errorMsg = $_.Exception.Message.Replace("'", "''")
+# Generate scripts
+$spScripts = @()
 
-            $logQuery = "
-            INSERT INTO dbo.RestoreSchemaLogDetail (RestoreId, Step, ObjectType, ObjectSchema, ObjectName, Action, Command, ErrorCode, Message, LogDate)
-            VALUES ($RestoreId, 'DROP PROCEDURE', 'PROCEDURE', '$procSchema', '$procName', 'DROP', '$dropQueryLog', 1, '$errorMsg', GETDATE())
-            "
-            Invoke-DbaQuery -SqlInstance $LogInstance -Database $LogDatabase -Query $logQuery
-            $ErrorCode = 1
+foreach ($sp in $storedProcedures) {
+    try {
+        $ScriptProcLines = $sp | Export-DbaScript -ScriptingOptionObject $options -NoPrefix -Passthru
+        $scriptProc = $ScriptProcLines -join "`r`n"
+
+        $spScripts += [pscustomobject]@{
+            Schema = $SchemaName
+            Name   = $sp.Name
+            Script = $scriptProc
         }
-
-        # CREATE PROCEDURE (via SMO)
-        try {
-            $scriptParts = $proc.Script()
-            $scriptRaw = $scriptParts -join "`r`n"
-
-            # Nettoyer tout ce qui précède CREATE PROCEDURE (insensible à la casse)
-            $createIndex = $scriptRaw.IndexOf("CREATE PROCEDURE", [System.StringComparison]::OrdinalIgnoreCase)
-            
-            $scriptCleaned = $scriptRaw.Substring($createIndex)
-            $procCommandLog = $scriptCleaned.Replace("'", "''") -replace "`r`n", " " -replace "`n", " " -replace "`r", " "
-            
-            Invoke-DbaQuery -SqlInstance $SqlInstance -Database $TargetDB -Query $scriptCleaned -EnableException
-
-            $logQuery = "
-            INSERT INTO dbo.RestoreSchemaLogDetail (RestoreId, Step, ObjectType, ObjectSchema, ObjectName, Action, Command, ErrorCode, Message, LogDate)
-            VALUES ($RestoreId, 'CREATE PROCEDURE', 'PROCEDURE', '$procSchema', '$procName', 'CREATE', '$procCommandLog', 0, 'Success', GETDATE())
-            "
-            Invoke-DbaQuery -SqlInstance $LogInstance -Database $LogDatabase -Query $logQuery
-        } catch {
-            $errorMsg = $_.Exception.Message.Replace("'", "''")
-
-            $logQuery = "
-            INSERT INTO dbo.RestoreSchemaLogDetail (RestoreId, Step, ObjectType, ObjectSchema, ObjectName, Action, Command, ErrorCode, Message, LogDate)
-            VALUES ($RestoreId, 'CREATE PROCEDURE', 'PROCEDURE', '$procSchema', '$procName', 'CREATE', '$procCommandLog', 1, '$errorMsg', GETDATE())
-            "
-            Invoke-DbaQuery -SqlInstance $LogInstance -Database $LogDatabase -Query $logQuery
-            $ErrorCode = 1
-        }
+    } catch {
+        Write-Log -Level WARNING -Message "Error generating script for procedure '$($sp.Name)': $($_.Exception.Message)"
     }
 }
 
+# Thread-safe dictionary to collect results
+$procCreateResults = [System.Collections.Concurrent.ConcurrentDictionary[string, int]]::new()
+
+# Execution
+
+$spScripts | ForEach-Object -Parallel {
+    $ErrorCode = 0
+    $procSchema = $_.Schema
+    $procName = $_.Name
+    $scriptContent = $_.Script
+    $scriptCleaned = $scriptContent -join "`r`n"
+    $procCommandLog = $scriptCleaned.Replace("'", "''") -replace "`r`n", " " -replace "`n", " " -replace "`r", " "
+
+    if (!$WhatIf) {
+        try {
+            Invoke-DbaQuery -SqlInstance $using:SqlInstance -Database $using:TargetDB -Query $scriptCleaned -EnableException
+
+            $logQuery = "
+            INSERT INTO dbo.RestoreSchemaLogDetail (RestoreId, Step, ObjectType, ObjectSchema, ObjectName, Action, Command, ErrorCode, Message, LogDate)
+            VALUES ($using:RestoreId, 'CREATE PROCEDURE', 'PROCEDURE', '$procSchema', '$procName', 'CREATE', '$procCommandLog', 0, 'Success', GETDATE())"
+            Invoke-DbaQuery -SqlInstance $using:LogInstance -Database $using:LogDatabase -Query $logQuery
+        } catch {
+            $errorMsg = $_.Exception.Message.Replace("'", "''")
+
+            $logQuery = "
+            INSERT INTO dbo.RestoreSchemaLogDetail (RestoreId, Step, ObjectType, ObjectSchema, ObjectName, Action, Command, ErrorCode, Message, LogDate)
+            VALUES ($using:RestoreId, 'CREATE PROCEDURE', 'PROCEDURE', '$procSchema', '$procName', 'CREATE', '$procCommandLog', 1, '$errorMsg', GETDATE())"
+            Invoke-DbaQuery -SqlInstance $using:LogInstance -Database $using:LogDatabase -Query $logQuery
+
+            $ErrorCode = 1
+        }
+    }
+
+    $dict = $using:procCreateResults
+    $null = $dict.TryAdd($procName, $ErrorCode)
+
+} -ThrottleLimit $Parallel
+
+
+# Post-loop result logging
+foreach ($entry in $procCreateResults.GetEnumerator()) {
+    $procName = $entry.Key
+    $code = $entry.Value
+
+    Write-Log -Level DEBUG -Message "Creating procedure [$procName]"
+
+    if ($code -eq 1) {
+        Write-Log -Level ERROR -Message "Failed to create procedure [$procName]"
+        $ErrorCode = 1
+        if(!$ContinueOnError){
+            return
+        }
+    }
+}
 
 
 #############################################################################################
 ## LOG TABLE
 #############################################################################################
 
-$RestoreEndDatetime = $now.ToString("yyyy-MM-dd HH:mm:ss")
+$end = Get-Date
+$RestoreEndDatetime = $end.ToString("yyyy-MM-dd HH:mm:ss")
 
 $logQuery = "INSERT INTO dbo.RestoreSchemaLog (RestoreId,RestoreStartDatetime,RestoreEndDatetime,SourceDB,TargetDB,SchemaName,ErrorCode,Message)
 VALUES ($RestoreId,'$RestoreStartDatetime','$RestoreEndDatetime','$SourceDB','$TargetDB','$SchemaName',$ErrorCode,'Message temporaire')"
 
 Invoke-DbaQuery -SqlInstance $LogInstance -Database $LogDatabase -Query $logQuery
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
