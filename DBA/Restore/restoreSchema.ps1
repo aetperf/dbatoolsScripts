@@ -100,6 +100,51 @@ Write-Log -Level INFO -Message "SQL instance: $SqlInstance"
 Write-Log -Level INFO -Message "Source DB: $SourceDB | Target DB: $TargetDB | Schema: $SchemaName"
 
 #############################################################################################
+## GATEKEEPER - CHECK PARAMETERS
+#############################################################################################
+Write-Log -Level INFO -Message "STEP : VALIDATING PARAMETERS (GATEKEEPER CHECKS)"
+
+# Test Sql Instance
+try {
+    $Server = Connect-DbaInstance -SqlInstance $SqlInstance -TrustServerCertificate -ErrorAction Stop
+    Write-Log -Level DEBUG -Message "SQL connection to instance '$SqlInstance' successful."
+} catch {
+    Write-Log -Level ERROR -Message "SQL connection failed to instance '$SqlInstance'. Error: $_"
+    return 
+}
+
+# Test Sql Log Instance
+try {
+    $null = Connect-DbaInstance -SqlInstance $LogInstance -TrustServerCertificate -ErrorAction Stop
+    Write-Log -Level DEBUG -Message "SQL connection to log instance '$LogInstance' successful."
+} catch {
+    Write-Log -Level ERROR -Message "SQL connection failed to log instance '$LogInstance'. Error: $_"
+    return 
+}
+
+# Test Source Database
+$db = Get-DbaDatabase -SqlInstance $Server -Database $SourceDB -ErrorAction Stop
+if($db.count -lt 1){
+    Write-Log -Level ERROR -Message "Source database '$SourceDB' does not exist or is inaccessible on instance '$SqlInstance'."
+    return
+}
+
+# Test Target Database
+$db = Get-DbaDatabase -SqlInstance $Server -Database $TargetDB -ErrorAction Stop
+if($db.count -lt 1){
+    Write-Log -Level ERROR -Message "Target database '$SourceDB' does not exist or is inaccessible on instance '$SqlInstance'."
+    return
+}
+
+$schemaExists = Invoke-DbaQuery -SqlInstance $SqlInstance -Database $SourceDB -Query "SELECT 1 FROM sys.schemas WHERE name = '$schemaName'"
+if ($schemaExists.Column1 -ne 1) {
+    Write-Log -Level ERROR -Message "Schema '$schemaName' doesn't exist."
+    return
+}
+
+    
+
+#############################################################################################
 ## INITIALIZE LOG TABLE IN THE LOGDATABASE
 #############################################################################################
 Write-Log -Level INFO -Message "STEP : CREATE LOG TABLES"
@@ -580,7 +625,7 @@ $sourceTables | ForEach-Object -Parallel {
 
     $insertList = $insertColumns -join ", "
     $selectList = $selectColumns -join ", "
-    $insertQuery = "INSERT INTO [$TargetDB].[$SchemaName].[$tableName] ($insertList) SELECT $selectList FROM [$SourceDB].[$SchemaName].[$tableName]"
+    $insertQuery = "INSERT INTO [$TargetDB].[$SchemaName].[$tableName] WITH (TABLOCK) ($insertList) SELECT $selectList FROM [$SourceDB].[$SchemaName].[$tableName]"
 
     $hasIdentity = Invoke-DbaQuery -SqlInstance $SqlInstance -Database $SourceDB -Query "
         SELECT COUNT(*) FROM sys.columns WHERE object_id = OBJECT_ID('$SchemaName.$tableName') AND is_identity = 1
@@ -916,121 +961,122 @@ WHERE s.name = '$SchemaName'
 
 Write-Log -Level INFO -Message ("Found {0} views to create from source schema '{1}'." -f $viewsSource.Count, $SchemaName)
 
-# Step 2: Create view dictionary
-$viewDictSource = @{}
-foreach ($view in $viewsSource) {
-    $viewDictSource[$view.FullName] = $view
-}
+if($viewsSource.Count -ne 0){
+    # Step 2: Create view dictionary
+    $viewDictSource = @{}
+    foreach ($view in $viewsSource) {
+        $viewDictSource[$view.FullName] = $view
+    }
 
-# Step 3: Get dependencies between views
-$dependenciesSource = Invoke-DbaQuery -SqlInstance $SqlInstance -Database $SourceDB -Query @"
-SELECT 
-    OBJECT_SCHEMA_NAME(referencing_id) + '.' + OBJECT_NAME(referencing_id) AS Referencer,
-    OBJECT_SCHEMA_NAME(referenced_id) + '.' + OBJECT_NAME(referenced_id) AS Referenced
-FROM sys.sql_expression_dependencies
-WHERE 
-    OBJECTPROPERTY(referencing_id, 'IsView') = 1
-    AND OBJECTPROPERTY(referenced_id, 'IsView') = 1
-"@
+    # Step 3: Get dependencies between views
+    $dependenciesSource = Invoke-DbaQuery -SqlInstance $SqlInstance -Database $SourceDB -Query "
+    SELECT 
+        OBJECT_SCHEMA_NAME(referencing_id) + '.' + OBJECT_NAME(referencing_id) AS Referencer,
+        OBJECT_SCHEMA_NAME(referenced_id) + '.' + OBJECT_NAME(referenced_id) AS Referenced
+    FROM sys.sql_expression_dependencies
+    WHERE 
+        OBJECTPROPERTY(referencing_id, 'IsView') = 1
+        AND OBJECTPROPERTY(referenced_id, 'IsView') = 1
+    "
 
-# Step 4: Filter internal dependencies
-$viewNamesSource = $viewDictSource.Keys
-$internalDepsSource = $dependenciesSource | Where-Object {
-    $_.Referencer -in $viewNamesSource -and $_.Referenced -in $viewNamesSource
-}
+    # Step 4: Filter internal dependencies
+    $viewNamesSource = $viewDictSource.Keys
+    $internalDepsSource = $dependenciesSource | Where-Object {
+        $_.Referencer -in $viewNamesSource -and $_.Referenced -in $viewNamesSource
+    }
 
-# Step 5: Topological sort (Kahn)
-$graph = @{}
-$inDegree = @{}
+    # Step 5: Topological sort (Kahn)
+    $graph = @{}
+    $inDegree = @{}
 
-foreach ($viewName in $viewNamesSource) {
-    $graph[$viewName] = @()
-    $inDegree[$viewName] = 0
-}
+    foreach ($viewName in $viewNamesSource) {
+        $graph[$viewName] = @()
+        $inDegree[$viewName] = 0
+    }
 
-foreach ($dep in $internalDepsSource) {
-    $graph[$dep.Referenced] += $dep.Referencer
-    $inDegree[$dep.Referencer]++
-}
+    foreach ($dep in $internalDepsSource) {
+        $graph[$dep.Referenced] += $dep.Referencer
+        $inDegree[$dep.Referencer]++
+    }
 
-$queue = [System.Collections.Generic.Queue[string]]::new()
-$inDegree.Keys | Where-Object { $inDegree[$_] -eq 0 } | ForEach-Object { $queue.Enqueue($_) }
+    $queue = [System.Collections.Generic.Queue[string]]::new()
+    $inDegree.Keys | Where-Object { $inDegree[$_] -eq 0 } | ForEach-Object { $queue.Enqueue($_) }
 
-$sortedSource = @()
+    $sortedSource = @()
 
-while ($queue.Count -gt 0) {
-    $current = $queue.Dequeue()
-    $sortedSource += $current
+    while ($queue.Count -gt 0) {
+        $current = $queue.Dequeue()
+        $sortedSource += $current
 
-    foreach ($dependent in $graph[$current]) {
-        $inDegree[$dependent]--
-        if ($inDegree[$dependent] -eq 0) {
-            $queue.Enqueue($dependent)
+        foreach ($dependent in $graph[$current]) {
+            $inDegree[$dependent]--
+            if ($inDegree[$dependent] -eq 0) {
+                $queue.Enqueue($dependent)
+            }
         }
     }
-}
 
-if ($sortedSource.Count -ne $viewNamesSource.Count) {
-    Write-Log -Level ERROR -Message "Cycle detected in view dependencies. Cannot safely recreate views."
-    return
-}
+    if ($sortedSource.Count -ne $viewNamesSource.Count) {
+        Write-Log -Level ERROR -Message "Cycle detected in view dependencies. Cannot safely recreate views."
+        return
+    }
 
-$sortedSource = [System.Collections.ArrayList]::new($sortedSource)
+    $sortedSource = [System.Collections.ArrayList]::new($sortedSource)
 
-# Step 6: Scripting options
-$options = New-DbaScriptingOption
-$options.SchemaQualify = $true
-$options.IncludeHeaders = $false
-$options.ToFileOnly = $false
-$options.Indexes = $true  
-$options.WithDependencies = $false
-$options.ScriptBatchTerminator = $true
+    # Step 6: Scripting options
+    $options = New-DbaScriptingOption
+    $options.SchemaQualify = $true
+    $options.IncludeHeaders = $false
+    $options.ToFileOnly = $false
+    $options.Indexes = $true  
+    $options.WithDependencies = $false
+    $options.ScriptBatchTerminator = $true
 
-# Step 7: Recreate each view
-foreach ($index in 0..($sortedSource.Count - 1)) {
-    $viewName = $sortedSource[$index]
-    $view = $viewDictSource[$viewName]
+    # Step 7: Recreate each view
+    foreach ($index in 0..($sortedSource.Count - 1)) {
+        $viewName = $sortedSource[$index]
+        $view = $viewDictSource[$viewName]
 
-    Write-Log -Level DEBUG -Message "Creating view [$($view.SchemaName).$($view.ViewName)]"
+        Write-Log -Level DEBUG -Message "Creating view [$($view.SchemaName).$($view.ViewName)]"
 
-    $ScriptViewAndIndex = Get-DbaDbView -SqlInstance $SqlInstance -Database $SourceDB -View "$($view.ViewName)" |
-        Where-Object { $_.Schema -eq $view.SchemaName } |
-        Export-DbaScript -ScriptingOptionObject $options -NoPrefix -Passthru 
+        $ScriptViewAndIndex = Get-DbaDbView -SqlInstance $SqlInstance -Database $SourceDB -View "$($view.ViewName)" |
+            Where-Object { $_.Schema -eq $view.SchemaName } |
+            Export-DbaScript -ScriptingOptionObject $options -NoPrefix -Passthru 
 
-    $cleanedScript = $ScriptViewAndIndex -join "`r`n"
-    $viewCommandLog = $cleanedScript.Replace("'", "''") -replace "`r`n", " " -replace "`n", " " -replace "`r", " "
+        $cleanedScript = $ScriptViewAndIndex -join "`r`n"
+        $viewCommandLog = $cleanedScript.Replace("'", "''") -replace "`r`n", " " -replace "`n", " " -replace "`r", " "
 
-    if (!$WhatIf) {
-        try {
-            Invoke-DbaQuery -SqlInstance $SqlInstance -Database $TargetDB -Query $cleanedScript -EnableException
-            $logQuery = "
-            INSERT INTO dbo.RestoreSchemaLogDetail
-            (RestoreId, Step, ObjectType, ObjectSchema, ObjectName, Action, Command, ErrorCode, Message, LogDate)
-            VALUES ($RestoreId, 'CREATE VIEW', 'VIEW', '$($view.SchemaName)', '$($view.ViewName)', 'CREATE', '$viewCommandLog', 0, 'Success', GETDATE())"
-            Invoke-DbaQuery -SqlInstance $LogInstance -Database $LogDatabase -Query $logQuery
-        }
-        catch {
-            $errorMsg = $_.Exception.Message.Replace("'", "''")
-            $logQuery = "
-            INSERT INTO dbo.RestoreSchemaLogDetail
-            (RestoreId, Step, ObjectType, ObjectSchema, ObjectName, Action, Command, ErrorCode, Message, LogDate)
-            VALUES ($RestoreId, 'CREATE VIEW', 'VIEW', '$($view.SchemaName)', '$($view.ViewName)', 'CREATE', '$viewCommandLog', 1, '$errorMsg', GETDATE())"
-            Invoke-DbaQuery -SqlInstance $LogInstance -Database $LogDatabase -Query $logQuery
-
-            Write-Log -Level ERROR -Message "Failed to create view [$($view.SchemaName).$($view.ViewName)] : $errorMsg"
-            $ErrorCode = 1
-            if(!$ContinueOnError){
-                $end = Get-Date
-                $RestoreEndDatetime = $end.ToString("yyyy-MM-dd HH:mm:ss")
-                $logQuery = "INSERT INTO dbo.RestoreSchemaLog (RestoreId,RestoreStartDatetime,RestoreEndDatetime,SourceDB,TargetDB,SchemaName,ErrorCode,Message)
-                VALUES ($RestoreId,'$RestoreStartDatetime','$RestoreEndDatetime','$SourceDB','$TargetDB','$SchemaName',$ErrorCode,'Error during the CREATE VIEW')"
+        if (!$WhatIf) {
+            try {
+                Invoke-DbaQuery -SqlInstance $SqlInstance -Database $TargetDB -Query $cleanedScript -EnableException
+                $logQuery = "
+                INSERT INTO dbo.RestoreSchemaLogDetail
+                (RestoreId, Step, ObjectType, ObjectSchema, ObjectName, Action, Command, ErrorCode, Message, LogDate)
+                VALUES ($RestoreId, 'CREATE VIEW', 'VIEW', '$($view.SchemaName)', '$($view.ViewName)', 'CREATE', '$viewCommandLog', 0, 'Success', GETDATE())"
                 Invoke-DbaQuery -SqlInstance $LogInstance -Database $LogDatabase -Query $logQuery
-                return
+            }
+            catch {
+                $errorMsg = $_.Exception.Message.Replace("'", "''")
+                $logQuery = "
+                INSERT INTO dbo.RestoreSchemaLogDetail
+                (RestoreId, Step, ObjectType, ObjectSchema, ObjectName, Action, Command, ErrorCode, Message, LogDate)
+                VALUES ($RestoreId, 'CREATE VIEW', 'VIEW', '$($view.SchemaName)', '$($view.ViewName)', 'CREATE', '$viewCommandLog', 1, '$errorMsg', GETDATE())"
+                Invoke-DbaQuery -SqlInstance $LogInstance -Database $LogDatabase -Query $logQuery
+
+                Write-Log -Level ERROR -Message "Failed to create view [$($view.SchemaName).$($view.ViewName)] : $errorMsg"
+                $ErrorCode = 1
+                if(!$ContinueOnError){
+                    $end = Get-Date
+                    $RestoreEndDatetime = $end.ToString("yyyy-MM-dd HH:mm:ss")
+                    $logQuery = "INSERT INTO dbo.RestoreSchemaLog (RestoreId,RestoreStartDatetime,RestoreEndDatetime,SourceDB,TargetDB,SchemaName,ErrorCode,Message)
+                    VALUES ($RestoreId,'$RestoreStartDatetime','$RestoreEndDatetime','$SourceDB','$TargetDB','$SchemaName',$ErrorCode,'Error during the CREATE VIEW')"
+                    Invoke-DbaQuery -SqlInstance $LogInstance -Database $LogDatabase -Query $logQuery
+                    return
+                }
             }
         }
     }
 }
-
 #############################################################################################
 ## DROP PROCEDURES
 #############################################################################################
