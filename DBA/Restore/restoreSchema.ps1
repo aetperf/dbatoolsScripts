@@ -201,51 +201,58 @@ if(!$WhatIf){
 
 Write-Log -Level INFO -Message "STEP : CHECKING FOR CROSS-SCHEMA DEPENDENCIES IN SOURCE AND TARGET DATABASES"
 
-# Check for SCHEMABINDING views in source database
-$dependentViewsSource = Invoke-DbaQuery -SqlInstance $SqlInstance -Database $SourceDB -Query @"
-SELECT distinct
-    OBJECT_SCHEMA_NAME(d.referencing_id) AS ViewSchema,
-    OBJECT_NAME(d.referencing_id) AS ViewName,
+# Check for SCHEMABINDING views and functions in source database
+$dependentObjectsSource = Invoke-DbaQuery -SqlInstance $SqlInstance -Database $SourceDB -Query @"
+SELECT DISTINCT
+    OBJECT_SCHEMA_NAME(d.referencing_id) AS ObjectSchema,
+    OBJECT_NAME(d.referencing_id) AS ObjectName,
+    o.type_desc AS ObjectType,
     OBJECT_SCHEMA_NAME(d.referenced_id) AS ReferencedSchema,
     OBJECT_NAME(d.referenced_id) AS ReferencedObject
 FROM sys.sql_expression_dependencies d
+JOIN sys.objects o ON d.referencing_id = o.object_id
 WHERE 
-    OBJECTPROPERTY(d.referencing_id, 'IsView') = 1
+    o.type IN ('V', 'FN', 'TF', 'IF') -- Views, Scalar, Table-valued, Inline functions
     AND OBJECTPROPERTY(d.referencing_id, 'IsSchemaBound') = 1
-    AND OBJECT_SCHEMA_NAME(d.referenced_id) = '$SchemaName'
-    AND OBJECT_SCHEMA_NAME(d.referencing_id) <> '$SchemaName'
+    AND ((OBJECT_SCHEMA_NAME(d.referenced_id) = '$SchemaName'
+    AND OBJECT_SCHEMA_NAME(d.referencing_id) <> '$SchemaName')
+    OR (OBJECT_SCHEMA_NAME(d.referenced_id) <> '$SchemaName'
+    AND OBJECT_SCHEMA_NAME(d.referencing_id) = '$SchemaName'))
 "@
 
-if ($dependentViewsSource.Count -gt 0) {
-    Write-Log -Level ERROR -Message "SCHEMABINDING views in the SOURCE database (outside schema '$SchemaName') reference objects inside '$SchemaName'. Cannot safely proceed restore schema."
-    $dependentViewsSource | Format-Table ViewSchema, ViewName, ReferencedSchema, ReferencedObject
+if ($dependentObjectsSource.Count -gt 0) {
+    Write-Log -Level ERROR -Message "SCHEMABINDING views or functions in the SOURCE database (outside schema '$SchemaName') reference objects inside '$SchemaName'. Cannot safely proceed with schema restore."
+    $dependentObjectsSource | Format-Table ObjectSchema, ObjectName, ObjectType, ReferencedSchema, ReferencedObject
     return
 } else {
-    Write-Log -Level DEBUG -Message "No SCHEMABINDING views in SOURCE reference schema '$SchemaName'."
+    Write-Log -Level DEBUG -Message "No SCHEMABINDING views or functions in SOURCE reference schema '$SchemaName'."
 }
 
-# Check for SCHEMABINDING views in target database
-
-$dependentViewsTarget = Invoke-DbaQuery -SqlInstance $SqlInstance -Database $TargetDB -Query @"
-SELECT distinct
-    OBJECT_SCHEMA_NAME(d.referencing_id) AS ViewSchema,
-    OBJECT_NAME(d.referencing_id) AS ViewName,
+# Check for SCHEMABINDING views and functions in target database
+$dependentObjectsTarget = Invoke-DbaQuery -SqlInstance $SqlInstance -Database $TargetDB -Query @"
+SELECT DISTINCT
+    OBJECT_SCHEMA_NAME(d.referencing_id) AS ObjectSchema,
+    OBJECT_NAME(d.referencing_id) AS ObjectName,
+    o.type_desc AS ObjectType,
     OBJECT_SCHEMA_NAME(d.referenced_id) AS ReferencedSchema,
     OBJECT_NAME(d.referenced_id) AS ReferencedObject
 FROM sys.sql_expression_dependencies d
+JOIN sys.objects o ON d.referencing_id = o.object_id
 WHERE 
-    OBJECTPROPERTY(d.referencing_id, 'IsView') = 1
+    o.type IN ('V', 'FN', 'TF', 'IF') -- Views, Scalar, Table-valued, Inline functions
     AND OBJECTPROPERTY(d.referencing_id, 'IsSchemaBound') = 1
-    AND OBJECT_SCHEMA_NAME(d.referenced_id) = '$SchemaName'
-    AND OBJECT_SCHEMA_NAME(d.referencing_id) <> '$SchemaName'
+    AND ((OBJECT_SCHEMA_NAME(d.referenced_id) = '$SchemaName'
+    AND OBJECT_SCHEMA_NAME(d.referencing_id) <> '$SchemaName')
+    OR (OBJECT_SCHEMA_NAME(d.referenced_id) <> '$SchemaName'
+    AND OBJECT_SCHEMA_NAME(d.referencing_id) = '$SchemaName'))
 "@
 
-if ($dependentViewsTarget.Count -gt 0) {
-    Write-Log -Level ERROR -Message "SCHEMABINDING views in the TARGET database (outside schema '$SchemaName') reference objects inside '$SchemaName'. Cannot safely proceed restore schema."
-    $dependentViewsTarget | Format-Table ViewSchema, ViewName, ReferencedSchema, ReferencedObject
+if ($dependentObjectsTarget.Count -gt 0) {
+    Write-Log -Level ERROR -Message "SCHEMABINDING views or functions in the TARGET database (outside schema '$SchemaName') reference objects inside '$SchemaName'. Cannot safely proceed with schema restore."
+    $dependentObjectsTarget | Format-Table ObjectSchema, ObjectName, ObjectType, ReferencedSchema, ReferencedObject
     return
 } else {
-    Write-Log -Level DEBUG -Message "No SCHEMABINDING views in TARGET reference schema '$SchemaName'."
+    Write-Log -Level DEBUG -Message "No SCHEMABINDING views or functions in TARGET reference schema '$SchemaName'."
 }
 
 
@@ -385,6 +392,145 @@ if($ErrorCodeDropView -eq 1){
 else{
     Write-Log -Level INFO -Message "STEP : DROP VIEW BEFORE DROP INSERT in $roundedDuration seconds | SUCCEED"
 }
+
+
+#############################################################################################
+## DROP FUNCTION 
+#############################################################################################
+Write-Log -Level INFO -Message "STEP : DROP FUNCTION"
+$ErrorCodeDropFunction = 0
+$startStep = Get-Date
+
+# --- Step 1: Retrieve UDFs from target schema
+$udfsTarget = Invoke-DbaQuery -SqlInstance $SqlInstance -Database $TargetDB -Query @"
+SELECT 
+    s.name AS SchemaName,
+    o.name AS FunctionName,
+    OBJECT_SCHEMA_NAME(o.object_id) + '.' + o.name AS FullName,
+    o.object_id AS ObjectId,
+    o.type AS ObjectType
+FROM sys.objects o
+JOIN sys.schemas s ON o.schema_id = s.schema_id
+WHERE s.name = '$SchemaName'
+  AND o.type IN ('FN', 'TF', 'IF')  -- Scalar, Table-valued, Inline
+"@
+
+Write-Log -Level INFO -Message ("Found {0} functions to drop." -f $udfsTarget.Count)
+
+# --- Step 2: Build dictionary (FullName => Function object)
+$udfDictTarget = @{}
+foreach ($udf in $udfsTarget) {
+    $udfDictTarget[$udf.FullName] = $udf
+}
+
+# --- Step 3: Load function dependencies
+$functionDepsTarget = Invoke-DbaQuery -SqlInstance $SqlInstance -Database $TargetDB -Query @"
+SELECT 
+    OBJECT_SCHEMA_NAME(referencing_id) + '.' + OBJECT_NAME(referencing_id) AS Referencer,
+    OBJECT_SCHEMA_NAME(referenced_id) + '.' + OBJECT_NAME(referenced_id) AS Referenced
+FROM sys.sql_expression_dependencies
+WHERE 
+    OBJECTPROPERTY(referencing_id, 'IsTableFunction') = 1
+    OR OBJECTPROPERTY(referencing_id, 'IsScalarFunction') = 1
+    OR OBJECTPROPERTY(referencing_id, 'IsInlineFunction') = 1
+"@
+
+# --- Step 4: Filter internal dependencies (only within target schema)
+$udfNamesTarget = $udfDictTarget.Keys
+$internalUdfDeps = $functionDepsTarget | Where-Object {
+    $_.Referencer -in $udfNamesTarget -and $_.Referenced -in $udfNamesTarget
+}
+
+# --- Step 5: Build graph and in-degree map for topological sort
+$graph = @{}
+$inDegree = @{}
+
+foreach ($udfName in $udfNamesTarget) {
+    $graph[$udfName] = @()
+    $inDegree[$udfName] = 0
+}
+
+foreach ($dep in $internalUdfDeps) {
+    $graph[$dep.Referenced] += $dep.Referencer
+    $inDegree[$dep.Referencer]++
+}
+
+# --- Step 6: Topological sort (reverse drop order)
+$queue = New-Object System.Collections.Generic.Queue[string]
+$inDegree.Keys | Where-Object { $inDegree[$_] -eq 0 } | ForEach-Object { $queue.Enqueue($_) }
+
+$sortedUdf = @()
+while ($queue.Count -gt 0) {
+    $current = $queue.Dequeue()
+    $sortedUdf += $current
+
+    foreach ($dependent in $graph[$current]) {
+        $inDegree[$dependent]--
+        if ($inDegree[$dependent] -eq 0) {
+            $queue.Enqueue($dependent)
+        }
+    }
+}
+
+if ($sortedUdf.Count -ne $udfNamesTarget.Count) {
+    Write-Log -Level ERROR -Message "Cycle detected in function dependencies. Cannot proceed with drop order."
+    return
+}
+
+$sortedUdf = [System.Collections.ArrayList]::new($sortedUdf)
+$sortedUdf.Reverse()
+
+# --- Step 7: Drop functions
+foreach ($udfName in $sortedUdf) {
+    $udf = $udfDictTarget[$udfName]
+    $dropQuery = "DROP FUNCTION $udfName"
+
+    Write-Log -Level DEBUG -Message "Dropping function: $udfName"
+
+    if (!$WhatIf) {
+        try {
+            Invoke-DbaQuery -SqlInstance $SqlInstance -Database $TargetDB -Query $dropQuery
+
+            $logQuery = "
+                INSERT INTO dbo.RestoreSchemaLogDetail (RestoreId, Step, ObjectType, ObjectSchema, ObjectName, Action, Command, ErrorCode, Message, LogDate)
+                VALUES ($RestoreId, 'DROP FUNCTION', 'FUNCTION', '$($udf.SchemaName)', '$($udf.FunctionName)', 'DROP', '$dropQuery', 0, 'Success', GETDATE())
+            "
+            Invoke-DbaQuery -SqlInstance $LogInstance -Database $LogDatabase -Query $logQuery
+        }
+        catch {
+            $ErrorCodeDropFunction = 1
+            $errorMsg = $_.Exception.Message.Replace("'", "''")
+            $logQuery = "
+                INSERT INTO dbo.RestoreSchemaLogDetail (RestoreId, Step, ObjectType, ObjectSchema, ObjectName, Action, Command, ErrorCode, Message, LogDate)
+                VALUES ($RestoreId, 'DROP FUNCTION', 'FUNCTION', '$($udf.SchemaName)', '$($udf.FunctionName)', 'DROP', '$dropQuery', 1, '$errorMsg', GETDATE())
+            "
+            Invoke-DbaQuery -SqlInstance $LogInstance -Database $LogDatabase -Query $logQuery
+            Write-Log -Level ERROR -Message "Failed to drop function $udfName : $errorMsg"
+            $ErrorCode = 1
+
+            if (!$ContinueOnError) {
+                $end = Get-Date
+                $RestoreEndDatetime = $end.ToString("yyyy-MM-dd HH:mm:ss")
+                $logQuery = "INSERT INTO dbo.RestoreSchemaLog (RestoreId, RestoreStartDatetime, RestoreEndDatetime, SourceDB, TargetDB, SchemaName, ErrorCode, Message)
+                             VALUES ($RestoreId, '$RestoreStartDatetime', '$RestoreEndDatetime', '$SourceDB', '$TargetDB', '$SchemaName', $ErrorCode, 'Error on DROP FUNCTION')"
+                Invoke-DbaQuery -SqlInstance $LogInstance -Database $LogDatabase -Query $logQuery
+                return
+            }
+        }
+    }
+}
+
+# --- Step 8: Final logging
+$endStep = Get-Date
+$durationInSeconds = ($endStep - $startStep).TotalSeconds
+$roundedDuration = [math]::Round($durationInSeconds, 2)
+
+if ($ErrorCodeDropFunction -eq 1) {
+    Write-Log -Level ERROR -Message "STEP : DROP FUNCTION in $roundedDuration seconds | FAILED"
+} else {
+    Write-Log -Level INFO -Message "STEP : DROP FUNCTION in $roundedDuration seconds | SUCCEED"
+}
+
 
 #############################################################################################
 ## DISABLE FOREIGN KEYS TO ALLOW TRUNCATE/INSERT ON DEPENDENT TABLES
@@ -996,6 +1142,138 @@ if($ErrorCodeEnableFk -eq 1){
 else{
     Write-Log -Level INFO -Message "STEP : ENABLING FOREIGN KEY CONSTRAINTS in $roundedDuration seconds | SUCCEED"
 }
+
+
+#############################################################################################
+## CREATE FUNCTION
+#############################################################################################
+#############################################################################################
+## CREATE FUNCTION AFTER DROP INSERT
+#############################################################################################
+Write-Log -Level INFO -Message "STEP : CREATE FUNCTION"
+$ErrorCodeCreateFunction = 0
+$startStep = Get-Date
+
+# Step 1: Retrieve functions from source schema
+$functionsSource = Get-DbaDbUdf -SqlInstance $SqlInstance -Database $SourceDB | Where-Object { $_.Schema -eq $SchemaName }
+
+Write-Log -Level INFO -Message ("Found {0} functions to create from source schema '{1}'." -f $functionsSource.Count, $SchemaName)
+
+if ($functionsSource.Count -ne 0) {
+
+    # Step 2: Build dictionary FullName => Function
+    $functionDictSource = @{}
+    foreach ($fn in $functionsSource) {
+        $fnFullName = "$($fn.Schema).$($fn.Name)"
+        $functionDictSource[$fnFullName] = $fn
+    }
+
+    # Step 3: Get dependencies between functions
+    $dependenciesSource = Invoke-DbaQuery -SqlInstance $SqlInstance -Database $SourceDB -Query "
+    SELECT 
+        OBJECT_SCHEMA_NAME(referencing_id) + '.' + OBJECT_NAME(referencing_id) AS Referencer,
+        OBJECT_SCHEMA_NAME(referenced_id) + '.' + OBJECT_NAME(referenced_id) AS Referenced
+    FROM sys.sql_expression_dependencies
+    WHERE 
+        (OBJECTPROPERTY(referencing_id, 'IsTableFunction') = 1 OR
+        OBJECTPROPERTY(referencing_id, 'IsScalarFunction') = 1 OR
+        OBJECTPROPERTY(referencing_id, 'IsInlineFunction') = 1)
+    "
+
+    # Step 4: Filter internal dependencies
+    $functionNames = $functionDictSource.Keys
+    $internalDeps = $dependenciesSource | Where-Object {
+        $_.Referencer -in $functionNames -and $_.Referenced -in $functionNames
+    }
+
+    # Step 5: Topological sort
+    $graph = @{}
+    $inDegree = @{}
+
+    foreach ($fnName in $functionNames) {
+        $graph[$fnName] = @()
+        $inDegree[$fnName] = 0
+    }
+
+    foreach ($dep in $internalDeps) {
+        $graph[$dep.Referenced] += $dep.Referencer
+        $inDegree[$dep.Referencer]++
+    }
+
+    $queue = [System.Collections.Generic.Queue[string]]::new()
+    $inDegree.Keys | Where-Object { $inDegree[$_] -eq 0 } | ForEach-Object { $queue.Enqueue($_) }
+
+    $sortedFunctions = @()
+    while ($queue.Count -gt 0) {
+        $current = $queue.Dequeue()
+        $sortedFunctions += $current
+        foreach ($dependent in $graph[$current]) {
+            $inDegree[$dependent]--
+            if ($inDegree[$dependent] -eq 0) {
+                $queue.Enqueue($dependent)
+            }
+        }
+    }
+
+    if ($sortedFunctions.Count -ne $functionNames.Count) {
+        Write-Log -Level ERROR -Message "Cycle detected in function dependencies. Cannot safely recreate functions."
+        return
+    }
+
+    $sortedFunctions = [System.Collections.ArrayList]::new($sortedFunctions)
+
+    # Step 6: Recreate each function
+    foreach ($fnName in $sortedFunctions) {
+        $fn = $functionDictSource[$fnName]
+
+        $cleanedScript = "$($fn.TextHeader)`r`n$($fn.TextBody)"
+        $fnCommandLog = $cleanedScript.Replace("'", "''") -replace "`r`n", " " -replace "`n", " " -replace "`r", " "
+
+        Write-Log -Level DEBUG -Message "Creating function [$($fn.Schema).$($fn.Name)]"
+
+        if (!$WhatIf) {
+            try {
+                Invoke-DbaQuery -SqlInstance $SqlInstance -Database $TargetDB -Query $cleanedScript -EnableException
+                $logQuery = "
+                INSERT INTO dbo.RestoreSchemaLogDetail
+                (RestoreId, Step, ObjectType, ObjectSchema, ObjectName, Action, Command, ErrorCode, Message, LogDate)
+                VALUES ($RestoreId, 'CREATE FUNCTION', 'FUNCTION', '$($fn.Schema)', '$($fn.Name)', 'CREATE', '$fnCommandLog', 0, 'Success', GETDATE())"
+                Invoke-DbaQuery -SqlInstance $LogInstance -Database $LogDatabase -Query $logQuery
+            }
+            catch {
+                $errorMsg = $_.Exception.Message.Replace("'", "''")
+                $logQuery = "
+                INSERT INTO dbo.RestoreSchemaLogDetail
+                (RestoreId, Step, ObjectType, ObjectSchema, ObjectName, Action, Command, ErrorCode, Message, LogDate)
+                VALUES ($RestoreId, 'CREATE FUNCTION', 'FUNCTION', '$($fn.Schema)', '$($fn.Name)', 'CREATE', '$fnCommandLog', 1, '$errorMsg', GETDATE())"
+                Invoke-DbaQuery -SqlInstance $LogInstance -Database $LogDatabase -Query $logQuery
+
+                Write-Log -Level ERROR -Message "Failed to create function [$($fn.Schema).$($fn.Name)] : $errorMsg"
+                $ErrorCode = 1
+                $ErrorCodeCreateFunction = 1
+                if (!$ContinueOnError) {
+                    $end = Get-Date
+                    $RestoreEndDatetime = $end.ToString("yyyy-MM-dd HH:mm:ss")
+                    $logQuery = "INSERT INTO dbo.RestoreSchemaLog (RestoreId,RestoreStartDatetime,RestoreEndDatetime,SourceDB,TargetDB,SchemaName,ErrorCode,Message)
+                    VALUES ($RestoreId,'$RestoreStartDatetime','$RestoreEndDatetime','$SourceDB','$TargetDB','$SchemaName',$ErrorCode,'Error during the CREATE FUNCTION')"
+                    Invoke-DbaQuery -SqlInstance $LogInstance -Database $LogDatabase -Query $logQuery
+                    return
+                }
+            }
+        }
+    }
+}
+
+$endStep = Get-Date
+$durationInSeconds = ($endStep - $startStep).TotalSeconds
+$roundedDuration = [math]::Round($durationInSeconds, 2)
+
+if ($ErrorCodeCreateFunction -eq 1) {
+    Write-Log -Level ERROR -Message "STEP : CREATE FUNCTION in $roundedDuration seconds | FAILED"
+} else {
+    Write-Log -Level INFO -Message "STEP : CREATE FUNCTION in $roundedDuration seconds | SUCCEED"
+}
+
 
 #############################################################################################
 ## CREATE VIEW AFTER DROP INSERT
