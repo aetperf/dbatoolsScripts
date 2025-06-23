@@ -254,8 +254,9 @@ if ($dependentViewsTarget.Count -gt 0) {
 ## DROP VIEW BEFORE DROP INSERT
 ##
 #############################################################################################
-
 Write-Log -Level INFO -Message "STEP : DROP VIEW BEFORE DROP INSERT"
+$ErrorCodeDropView = 0
+$startStep = Get-Date
 
 # --- Step 1: Retrieve views from target schema
 $viewsTarget = Invoke-DbaQuery -SqlInstance $SqlInstance -Database $TargetDB -Query @"
@@ -353,6 +354,7 @@ foreach ($viewName in $sortedTarget) {
                 Invoke-DbaQuery -SqlInstance $LogInstance -Database $LogDatabase -Query $logQuery
         }
         catch {
+            $ErrorCodeDropView = 1
             $errorMsg = $_.Exception.Message.Replace("'", "''")
             $logQuery = "
             INSERT INTO dbo.RestoreSchemaLogDetail (RestoreId, Step, ObjectType, ObjectSchema, ObjectName, Action, Command, ErrorCode, Message, LogDate)
@@ -373,12 +375,24 @@ foreach ($viewName in $sortedTarget) {
     }
 }
 
+$endStep = Get-Date
+$durationInSeconds = ($endStep - $startStep).TotalSeconds
+$roundedDuration = [math]::Round($durationInSeconds, 2)
+
+if($ErrorCodeDropView -eq 1){
+    Write-Log -Level ERROR -Message "STEP : DROP VIEW BEFORE DROP INSERT in $roundedDuration seconds | FAILED"
+}
+else{
+    Write-Log -Level INFO -Message "STEP : DROP VIEW BEFORE DROP INSERT in $roundedDuration seconds | SUCCEED"
+}
 
 #############################################################################################
 ## DISABLE FOREIGN KEYS TO ALLOW TRUNCATE/INSERT ON DEPENDENT TABLES
 #############################################################################################
-
 Write-Log -Level INFO -Message "STEP : DISABLING FOREIGN KEYS"
+$ErrorCodeDisableFk = 0
+$startStep = Get-Date
+
 
 # Step 1: Retrieve foreign keys referencing tables in the schema
 $foreignKey = Invoke-DbaQuery -SqlInstance $SqlInstance -Database $TargetDB -Query @"
@@ -448,6 +462,7 @@ $fkDropResults.GetEnumerator() | ForEach-Object {
     if ($code -eq 1) {
         Write-Log -Level ERROR -Message "Failed to drop foreign key: $fk"
         $ErrorCode = 1
+        $ErrorCodeDisableFk = 1
     }
 }
 
@@ -459,11 +474,25 @@ if($ErrorCode -eq 1 -and !$ContinueOnError){
     Invoke-DbaQuery -SqlInstance $LogInstance -Database $LogDatabase -Query $logQuery
     return
 }
+
+$endStep = Get-Date
+$durationInSeconds = ($endStep - $startStep).TotalSeconds
+$roundedDuration = [math]::Round($durationInSeconds, 2)
     
+if($ErrorCodeDisableFk -eq 1){
+    Write-Log -Level ERROR -Message "STEP : DISABLING FOREIGN KEYS in $roundedDuration seconds | FAILED"
+}
+else{
+    Write-Log -Level INFO -Message "STEP : DISABLING FOREIGN KEYS in $roundedDuration seconds | SUCCEED"
+}
+
 #############################################################################################
 ## DROP INSERT TABLE
 #############################################################################################
 Write-Log -Level INFO -Message "STEP : DROP INSERT TABLES"
+$ErrorCodeDropInsertTable = 0
+$startStep = Get-Date
+
 
 $sourceTables = Get-DbaDbTable -SqlInstance $SqlInstance -Database $SourceDB -Schema $SchemaName
 Write-Log -Level INFO -Message ("Found {0} table(s) to drop insert" -f $sourceTables.Count)
@@ -800,6 +829,7 @@ foreach ($tableEntry in $TableResults.GetEnumerator()) {
 
                     if($code -eq 1){
                         $ErrorCode = 1
+                        $ErrorCodeDropInsertTable = 1
                     }
 
                     switch ($stepName) {
@@ -830,10 +860,24 @@ foreach ($tableEntry in $TableResults.GetEnumerator()) {
     }
 }
 
+$endStep = Get-Date
+$durationInSeconds = ($endStep - $startStep).TotalSeconds
+$roundedDuration = [math]::Round($durationInSeconds, 2)
+
+if($ErrorCodeDropInsertTable -eq 1){
+    Write-Log -Level ERROR -Message "STEP : DROP INSERT TABLES in $roundedDuration seconds | FAILED"
+}
+else{
+    Write-Log -Level INFO -Message "STEP : DROP INSERT TABLES in $roundedDuration seconds | SUCCEED"
+}
+
 #############################################################################################
 ## ENABLED FOREIGN KEY 
 #############################################################################################
 Write-Log -Level INFO -Message "STEP : ENABLING FOREIGN KEY CONSTRAINTS"
+$ErrorCodeEnableFk = 0
+$startStep = Get-Date
+
 
 # Étape 1 : Récupération des FK à rétablir
 $foreignKeyNames = Invoke-DbaQuery -SqlInstance $SqlInstance -Database $SourceDB -Query "
@@ -929,6 +973,7 @@ foreach ($entry in $fkEnableResults.GetEnumerator()) {
     if ($code -eq 1) {
         Write-Log -Level ERROR -Message "Failed to enable foreign key [$fkName]"
         $ErrorCode = 1
+        $ErrorCodeEnableFk = 1
     }
 }
 
@@ -941,10 +986,24 @@ if($ErrorCode -eq 1 -and !$ContinueOnError){
     return
 }
 
+$endStep = Get-Date
+$durationInSeconds = ($endStep - $startStep).TotalSeconds
+$roundedDuration = [math]::Round($durationInSeconds, 2)
+
+if($ErrorCodeEnableFk -eq 1){
+    Write-Log -Level ERROR -Message "STEP : ENABLING FOREIGN KEY CONSTRAINTS in $roundedDuration seconds | FAILED"
+}
+else{
+    Write-Log -Level INFO -Message "STEP : ENABLING FOREIGN KEY CONSTRAINTS in $roundedDuration seconds | SUCCEED"
+}
+
 #############################################################################################
 ## CREATE VIEW AFTER DROP INSERT
 #############################################################################################
 Write-Log -Level INFO -Message "STEP : CREATE VIEW AFTER DROP INSERT"
+$ErrorCodeCreateView = 0
+$startStep = Get-Date
+
 
 # Step 1: Retrieve views from source schema
 $viewsSource = Invoke-DbaQuery -SqlInstance $SqlInstance -Database $SourceDB -Query @"
@@ -1065,6 +1124,7 @@ if($viewsSource.Count -ne 0){
 
                 Write-Log -Level ERROR -Message "Failed to create view [$($view.SchemaName).$($view.ViewName)] : $errorMsg"
                 $ErrorCode = 1
+                $ErrorCodeCreateView = 1
                 if(!$ContinueOnError){
                     $end = Get-Date
                     $RestoreEndDatetime = $end.ToString("yyyy-MM-dd HH:mm:ss")
@@ -1077,10 +1137,25 @@ if($viewsSource.Count -ne 0){
         }
     }
 }
+
+$endStep = Get-Date
+$durationInSeconds = ($endStep - $startStep).TotalSeconds
+$roundedDuration = [math]::Round($durationInSeconds, 2)
+
+if($ErrorCodeCreateView -eq 1){
+    Write-Log -Level ERROR -Message "STEP : CREATE VIEW AFTER DROP INSERT in $roundedDuration seconds | FAILED"
+}
+else{
+    Write-Log -Level INFO -Message "STEP : CREATE VIEW AFTER DROP INSERT in $roundedDuration seconds | SUCCEED"
+}
+
+
 #############################################################################################
 ## DROP PROCEDURES
 #############################################################################################
 Write-Log -Level INFO -Message "STEP : DROP PROCEDURES"
+$ErrorCodeDropProcedure = 0
+$startStep = Get-Date
 
 # Retrieve stored procedures from target schema
 $procsToDelete = Get-DbaDbStoredProcedure -SqlInstance $SqlInstance -Database $TargetDB | Where-Object { $_.Schema -eq $SchemaName }
@@ -1129,6 +1204,7 @@ foreach ($entry in $procDropResults.GetEnumerator()) {
     if ($code -eq 1) {
         Write-Log -Level ERROR -Message "Failed to drop procedure [$procName]."
         $ErrorCode = 1
+        $ErrorCodeDropProcedure = 1
     }
 }
 
@@ -1141,10 +1217,23 @@ if($ErrorCode -eq 1 -and !$ContinueOnError){
     return
 }
 
+$endStep = Get-Date
+$durationInSeconds = ($endStep - $startStep).TotalSeconds
+$roundedDuration = [math]::Round($durationInSeconds, 2)
+
+if($ErrorCodeDropProcedure -eq 1){
+    Write-Log -Level ERROR -Message "STEP : DROP PROCEDURES in $roundedDuration seconds | FAILED"
+}
+else{
+    Write-Log -Level INFO -Message "STEP : DROP PROCEDURES in $roundedDuration seconds | SUCCEED"
+}
+
 #############################################################################################
 ## CREATE PROCEDURES
 #############################################################################################
 Write-Log -Level INFO -Message "STEP : CREATE PROCEDURES"
+$ErrorCodeCreateProcedure = 0
+$startStep = Get-Date
 
 # Get procedures from source
 $storedProcedures = Get-DbaDbStoredProcedure -SqlInstance $SqlInstance -Database $SourceDB | Where-Object { $_.Schema -eq $SchemaName }
@@ -1219,6 +1308,7 @@ foreach ($entry in $procCreateResults.GetEnumerator()) {
     if ($code -eq 1) {
         Write-Log -Level ERROR -Message "Failed to create procedure [$procName]"
         $ErrorCode = 1
+        $ErrorCodeCreateProcedure
     }
 }
 
@@ -1231,6 +1321,16 @@ if($ErrorCode -eq 1 -and !$ContinueOnError){
     return
 }
 
+$endStep = Get-Date
+$durationInSeconds = ($endStep - $startStep).TotalSeconds
+$roundedDuration = [math]::Round($durationInSeconds, 2)
+
+if($ErrorCodeCreateProcedure -eq 1){
+    Write-Log -Level ERROR -Message "STEP : CREATE PROCEDURES in $roundedDuration seconds | FAILED"
+}
+else{
+    Write-Log -Level INFO -Message "STEP : CREATE PROCEDURES in $roundedDuration seconds | SUCCEED"
+}
 
 #############################################################################################
 ## LOG TABLE
@@ -1238,6 +1338,15 @@ if($ErrorCode -eq 1 -and !$ContinueOnError){
 
 if(!$WhatIf){
     $end = Get-Date
+    $durationInSeconds = ($end - $start).TotalSeconds
+    $roundedDuration = [math]::Round($durationInSeconds, 2)
+
+    if($ErrorCode -eq 1){
+        Write-Log -Level ERROR -Message "RESTORE SCHEMA FAILED in total time $roundedDuration seconds"
+    }
+    else{
+        Write-Log -Level INFO -Message "RESTORE SCHEMA SUCCEED in total time $roundedDuration seconds"
+    }
     $RestoreEndDatetime = $end.ToString("yyyy-MM-dd HH:mm:ss")
     $logQuery = "INSERT INTO dbo.RestoreSchemaLog (RestoreId,RestoreStartDatetime,RestoreEndDatetime,SourceDB,TargetDB,SchemaName,ErrorCode,Message)
     VALUES ($RestoreId,'$RestoreStartDatetime','$RestoreEndDatetime','$SourceDB','$TargetDB','$SchemaName',$ErrorCode,'Message temporaire')"
