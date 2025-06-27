@@ -1,24 +1,38 @@
-IF OBJECT_ID('dbo.sp_KillSessionTempdb') IS NULL
-  EXEC ('CREATE PROCEDURE dbo.sp_KillSessionTempdb AS RETURN 0;');
+IF OBJECT_ID('dbo.sp_ProtectTempdb') IS NULL
+  EXEC ('CREATE PROCEDURE dbo.sp_ProtectTempdb AS RETURN 0;');
+GO
+
+/*Log Table*/
+IF OBJECT_ID('dbo.ProtectTempdbLog', 'U') IS NULL
+    CREATE TABLE dbo.ProtectTempdbLog (
+        SessionId INT,
+        LoginName NVARCHAR(256),
+        ProgramName NVARCHAR(1000),
+        RunningUserSpaceMB NUMERIC(10,1),
+        ThresholdMB NUMERIC(10,1),
+        StatementText NVARCHAR(MAX),
+        ExecutionDateTime DATETIME DEFAULT GETDATE()
+);
 GO
 
 
-ALTER PROCEDURE [dbo].[sp_KillSessionTempdb]
-     @UsageTempDb DECIMAL(18,2) = 0.5
-	, @IncludeLogin VARCHAR(MAX) = NULL
-	, @ExcludeLogin VARCHAR(MAX) = NULL
-	, @IncludeProgramName VARCHAR(MAX) = NULL
-	, @ExcludeProgramName VARCHAR(MAX) = NULL
-	, @WhatIf BIT = 0
-	, @Help BIT = 0
+ALTER PROCEDURE [dbo].[sp_ProtectTempdb]
+--Use @Help=1 to see the parameters definitions
+    @UsageTempDb DECIMAL(18,2) = 0.5
+    , @IncludeLogin VARCHAR(MAX) = NULL
+    , @ExcludeLogin VARCHAR(MAX) = NULL
+    , @IncludeProgramName VARCHAR(MAX) = NULL
+    , @ExcludeProgramName VARCHAR(MAX) = NULL
+    , @ThrowException BIT = 0
+    , @WhatIf BIT = 0
+    , @Help BIT = 0
 
-WITH RECOMPILE
 AS
 SET NOCOUNT ON;
 
-DECLARE 
+DECLARE
     @Version VARCHAR(10) = NULL
-	, @VersionDate DATETIME = NULL
+    , @VersionDate DATETIME = NULL
 
 SELECT
     @Version = '1.0'
@@ -27,10 +41,10 @@ SELECT
 DECLARE @MaxTempMB DECIMAL(18,2);
 
 SELECT @MaxTempMB =
-    CASE 
+    CASE
         WHEN EXISTS (
-            SELECT 1 
-            FROM tempdb.sys.database_files 
+            SELECT 1
+            FROM tempdb.sys.database_files
             WHERE max_size = -1 AND type = 0
         ) THEN -1
         ELSE SUM(max_size) / 128.0
@@ -41,9 +55,9 @@ WHERE type = 0;
 
 /* @Help = 1 */
 IF @Help = 1 BEGIN
-	PRINT '
+    PRINT '
 /*
-    sp_KillSessionTempdb from Architecture&Performance GitHub
+    sp_KillSessionTempdb from Architecture&Performance GitHub  
     Version: 1.0 updated 06/25/2025
 
     This stored procedure analyzes tempdb usage and optionally terminates sessions 
@@ -53,6 +67,8 @@ IF @Help = 1 BEGIN
     - Supports filtering by login name or program name (inclusion/exclusion).
     - Supports threshold-based targeting of sessions using tempdb space.
     - Allows previewing the impact via WhatIf mode before terminating sessions.
+    - Optionally throws an exception when a session fails to be terminated.
+    - Logs all terminated sessions into a permanent audit table (ProtectTempdbLog).
 
     Known limitations of this version:
     - This stored procedure is supported on SQL Server 2012 and newer.
@@ -90,147 +106,173 @@ IF @Help = 1 BEGIN
     @WhatIf BIT = 0
         - If set to 1, displays the sessions that would be killed without actually executing the KILL command.
 
+    @ThrowException BIT = 0
+        - If set to 1, throws an exception (THROW 50001) when a session fails to be killed.
+        - Useful for automated monitoring and alerting systems that need to detect failures programmatically.
+        - If set to 0 (default), the procedure will log the error using PRINT and continue processing.
+
     @Help BIT = 0
         - Displays this help documentation and exits.
 
+    Logging:
+    - All killed sessions are logged in the table dbo.ProtectTempdbLog, which includes:
+        - SessionId           : ID of the terminated session.
+        - LoginName           : Login name associated with the session.
+        - ProgramName         : Name of the client application.
+        - RunningUserSpaceMB  : Space (in MB) used by user objects.
+        - ThresholdMB         : Configured threshold (in MB) that triggered the kill.
+        - StatementText       : Command executed (e.g., KILL 53).
+        - ExecutionDateTime   : Date and time when the session was terminated.
+
+    Table Definition:
+
+        CREATE TABLE dbo.ProtectTempdbLog (
+            SessionId INT,
+            LoginName NVARCHAR(256),
+            ProgramName NVARCHAR(1000),
+            RunningUserSpaceMB NUMERIC(10,1),
+            ThresholdMB NUMERIC(10,1),
+            StatementText NVARCHAR(MAX),
+            ExecutionDateTime DATETIME DEFAULT GETDATE()
+        );
+
     Usage Notes:
     - Use @WhatIf = 1 to preview results safely.
+    - Use @ThrowException = 1 if you need to catch failures as actual SQL exceptions.
     - It is strongly recommended to monitor carefully before terminating sessions in a production environment.
     - Use filters wisely to avoid unintended session terminations.
-
+    - Review contents of dbo.ProtectTempdbLog for audit and post-mortem analysis.
 
     This version is maintained by Architecture & Performance.
-
-    
 */';
 
-	RETURN;
-	END;  
+    RETURN;
+    END;  
 
 
 
-/* SQL Server version check */	
-DECLARE 
-	@SQL NVARCHAR(4000)
-	, @SQLVersion NVARCHAR(128)
-	, @SQLVersionMajor DECIMAL(10,2)
-	, @SQLVersionMinor DECIMAL(10,2);
+/* SQL Server version check */
+DECLARE
+      @SQL NVARCHAR(4000)
+      , @SQLVersion NVARCHAR(128)
+      , @SQLVersionMajor DECIMAL(10,2)
+      , @SQLVersionMinor DECIMAL(10,2);
 
 IF OBJECT_ID('tempdb..#SQLVersions') IS NOT NULL
-	DROP TABLE #SQLVersions;
+      DROP TABLE #SQLVersions;
 
 CREATE TABLE #SQLVersions (
-	VersionName VARCHAR(10)
-	, VersionNumber DECIMAL(10,2)
-	);
+      VersionName VARCHAR(10)
+      , VersionNumber DECIMAL(10,2)
+      );
 
 INSERT #SQLVersions
 VALUES
-	('2008', 10)
-	, ('2008 R2', 10.5)
-	, ('2012', 11)
-	, ('2014', 12)
-	, ('2016', 13)
-	, ('2017', 14)
-	, ('2019', 15)
-	, ('2022', 16);
+      ('2008', 10)
+      , ('2008 R2', 10.5)
+      , ('2012', 11)
+      , ('2014', 12)
+      , ('2016', 13)
+      , ('2017', 14)
+      , ('2019', 15)
+      , ('2022', 16);
 
 /* SQL Server version */
 SELECT @SQLVersion = CAST(SERVERPROPERTY('ProductVersion') AS NVARCHAR(128));
 
-SELECT 
-	@SQLVersionMajor = SUBSTRING(@SQLVersion, 1,CHARINDEX('.', @SQLVersion) + 1 )
-	, @SQLVersionMinor = PARSENAME(CONVERT(varchar(32), @SQLVersion), 2);
+SELECT
+    @SQLVersionMajor = SUBSTRING(@SQLVersion, 1,CHARINDEX('.', @SQLVersion) + 1 )
+    , @SQLVersionMinor = PARSENAME(CONVERT(varchar(32), @SQLVersion), 2);
 
 
-	/* check for unsupported version */	
+/* check for unsupported version */
 IF @SQLVersionMajor < 11 BEGIN
-	PRINT '
+    PRINT '
 /*
     *** Unsupported SQL Server Version ***
 
-    sp_KillSessionTempdb is supported only for execution on SQL Server 2012 and later.
+    sp_ProtectTempdb is supported only for execution on SQL Server 2012 and later.
 
-	For more information about the limitations of sp_KillSessionTempdb, execute
+    For more information about the limitations of sp_ProtectTempdb, execute
     using @Help = 1
 
     *** EXECUTION ABORTED ***
-    	   
+      
 */';
-	RETURN;
-	END; 
+    RETURN 1;
+    END;
 
 /* check if TempDb size is unlimited then @UsageTempDb must be greater than 1 */
 IF @MaxTempMB=-1 AND @UsageTempDb < 1 BEGIN
-	PRINT '
+    PRINT '
 /*
     *** @UsageTempDb MUST BE GREATER THAN 1 ***
 
     @UsageTempDb must be greater than 1 if @MaxTempMB equals -1 (Unlimited).
 
-	For more information about the limitations of sp_KillSessionTempdb, execute
+    For more information about the limitations of sp_ProtectTempdb, execute
     using @Help = 1
 
     *** EXECUTION ABORTED ***
-    	   
+          
 */';
-	RETURN;
-	END;
+    RETURN 1;
+    END;
 
 /* check if @UsageTempDb is smaller than @MaxTempMB */
 IF @MaxTempMB <> -1 AND @UsageTempDb > @MaxTempMB BEGIN
-	PRINT '
+    PRINT '
 /*
     *** @UsageTempDb MUST BE SMALLER THAN @MaxTempMB ***
 
     @UsageTempDb must be smaller than @MaxTempMB.
 
-	For more information about the limitations of sp_KillSessionTempdb, execute
+    For more information about the limitations of sp_ProtectTempdb, execute
     using @Help = 1
 
     *** EXECUTION ABORTED ***
-    	   
+          
 */';
-	RETURN;
-	END;
+    RETURN 1;
+    END;
 
 
-/* check version if parameters @IncludeLogin,@ExcludeLogin,@IncludeProgramName,@ExcludeProgramName are used*/	
+/* check version if parameters @IncludeLogin,@ExcludeLogin,@IncludeProgramName,@ExcludeProgramName are used*/     
 IF @SQLVersionMajor < 13 AND (@IncludeLogin IS NOT NULL OR @ExcludeLogin IS NOT NULL OR @IncludeProgramName IS NOT NULL OR @ExcludeProgramName IS NOT NULL) BEGIN
-	PRINT '
+    PRINT '
 /*
     *** @IncludeLogin,@ExcludeLogin,@IncludeProgramName,@ExcludeProgramName ARE NOT SUPPORTED ***
 
     @IncludeLogin,@ExcludeLogin,@IncludeProgramName,@ExcludeProgramName is supported only for execution on SQL Server 2016 and later.
 
-	For more information about the limitations of sp_KillSessionTempdb, execute
+    For more information about the limitations of sp_ProtectTempdb, execute
     using @Help = 1
 
     *** EXECUTION ABORTED ***
-    	   
+          
 */';
-	RETURN;
-	END; 
+    RETURN 1;
+    END;
 
 /* Check Usage Percent value between 0 and 1 */
 IF @UsageTempDb < 0  BEGIN
-	PRINT '
+    PRINT '
 /*
     *** @UsageTempDb MUST BE GREATER THAN 0 ***
 
-	For more information of sp_KillSessionTempdb, execute
+    For more information of sp_ProtectTempdb, execute
     using @Help = 1
 
     *** EXECUTION ABORTED ***
-    	   
+        
 */';
-	RETURN;
-	END; 
+    RETURN 1;
+    END;
 
 
 /* Set @UsageTempDbSize variable */
 DECLARE @UsageTempDbSize BIGINT;
-IF @UsageTempDb >= 0 AND @UsageTempDb <= 1 
+IF @UsageTempDb >= 0 AND @UsageTempDb <= 1
     BEGIN
         SET @UsageTempDbSize=@UsageTempDb * @MaxTempMB;
     END
@@ -241,10 +283,9 @@ ELSE
            
 
 /* TempdbStats */
-IF OBJECT_ID('tempdb..#TempdbStats') IS NOT NULL
-	DROP TABLE #TempdbStats;
 
-CREATE TABLE #TempdbStats (
+
+DECLARE  @TempdbStats TABLE (
         TotalSpaceMB NUMERIC(10,1),
         UsedSpaceMB NUMERIC(10,1),
         FreespaceMB NUMERIC(10,1),
@@ -255,23 +296,22 @@ CREATE TABLE #TempdbStats (
         LogSpaceUsedMB NUMERIC(10,1)
     );
 
-INSERT INTO #TempdbStats	
-SELECT 
-	CONVERT(NUMERIC(10,1),(SUM(total_page_count)/128.)) AS TotalSpaceMB
-	, CONVERT(NUMERIC(10,1),(SUM(allocated_extent_page_count)/128.)) AS UsedSpaceMB
-	, CONVERT(NUMERIC(10,1),(SUM(unallocated_extent_page_count)/128.)) AS FreespaceMB
-	, CONVERT(NUMERIC(10,1),(SUM(user_object_reserved_page_count)/128.)) AS UserObjectSpaceMB
-	, CONVERT(NUMERIC(10,1),(SUM(internal_object_reserved_page_count)/128.)) AS InternalObjectSpaceMB
-	, CONVERT(NUMERIC(10,1),(SUM(version_store_reserved_page_count)/128.)) AS VersionStoreSpaceMB
-	, CONVERT(NUMERIC(10,1),(SELECT SUM(size)/128. FROM tempdb.sys.database_files WHERE type = 1)) AS LogFileSizeMB
-	, (SELECT CONVERT(NUMERIC(10,1),(used_log_space_in_bytes/1048576.)) FROM tempdb.sys.dm_db_log_space_usage) AS LogSpaceUsedMB
+INSERT INTO @TempdbStats
+SELECT
+    CONVERT(NUMERIC(10,1),(SUM(total_page_count)/128.)) AS TotalSpaceMB
+    , CONVERT(NUMERIC(10,1),(SUM(allocated_extent_page_count)/128.)) AS UsedSpaceMB
+    , CONVERT(NUMERIC(10,1),(SUM(unallocated_extent_page_count)/128.)) AS FreespaceMB
+    , CONVERT(NUMERIC(10,1),(SUM(user_object_reserved_page_count)/128.)) AS UserObjectSpaceMB
+    , CONVERT(NUMERIC(10,1),(SUM(internal_object_reserved_page_count)/128.)) AS InternalObjectSpaceMB
+    , CONVERT(NUMERIC(10,1),(SUM(version_store_reserved_page_count)/128.)) AS VersionStoreSpaceMB
+    , CONVERT(NUMERIC(10,1),(SELECT SUM(size)/128. FROM tempdb.sys.database_files WHERE type = 1)) AS LogFileSizeMB
+    , (SELECT CONVERT(NUMERIC(10,1),(used_log_space_in_bytes/1048576.)) FROM tempdb.sys.dm_db_log_space_usage) AS LogSpaceUsedMB
 FROM tempdb.sys.dm_db_file_space_usage
 
 /* TempSessionStats */
-IF OBJECT_ID('tempdb..#TempSessionStats') IS NOT NULL
-	DROP TABLE #TempSessionStats;
 
-CREATE TABLE #TempSessionStats (
+
+DECLARE  @TempSessionStats TABLE (
         session_id INT,
         LoginName NVARCHAR(128),
         ProgramName NVARCHAR(128),
@@ -284,7 +324,7 @@ CREATE TABLE #TempSessionStats (
         StatementText NVARCHAR(MAX)
     );
 
-;WITH SessionInfo AS (
+WITH SessionInfo AS (
     SELECT DISTINCT
         u.session_id
     FROM (
@@ -299,7 +339,7 @@ CREATE TABLE #TempSessionStats (
             AND (user_objects_alloc_page_count > 0 OR internal_objects_alloc_page_count > 0)
     ) u
 )
-INSERT INTO #TempSessionStats
+INSERT INTO @TempSessionStats
 SELECT
     s.session_id,
     es.login_name AS LoginName,
@@ -317,7 +357,7 @@ INNER JOIN sys.dm_exec_sessions es
 LEFT JOIN (
     SELECT
         session_id,
-        (user_objects_alloc_page_count + internal_objects_alloc_page_count 
+        (user_objects_alloc_page_count + internal_objects_alloc_page_count
          - internal_objects_dealloc_page_count - user_objects_dealloc_page_count ) / 128. AS SessionNetAllocationMB,
         (user_objects_alloc_page_count - user_objects_dealloc_page_count) / 128. AS SessionNetAllocationUserSpaceMB,
         (internal_objects_alloc_page_count - internal_objects_dealloc_page_count) / 128. AS SessionNetAllocationInternalSpaceMB
@@ -327,7 +367,7 @@ LEFT JOIN (
 LEFT JOIN (
     SELECT
         session_id,
-        SUM(user_objects_alloc_page_count + internal_objects_alloc_page_count 
+        SUM(user_objects_alloc_page_count + internal_objects_alloc_page_count
             - internal_objects_dealloc_page_count - user_objects_dealloc_page_count ) / 128. AS RunningNetAllocationMB,
         SUM(user_objects_alloc_page_count - user_objects_dealloc_page_count) / 128. AS RunningNetAllocationUserSpaceMB,
         SUM(internal_objects_alloc_page_count - internal_objects_dealloc_page_count) / 128. AS RunningNetAllocationInternalSpaceMB
@@ -339,86 +379,93 @@ LEFT JOIN sys.dm_exec_connections c
     ON c.session_id = s.session_id
 OUTER APPLY sys.dm_exec_sql_text(c.most_recent_sql_handle) t
 WHERE
+    CONVERT(NUMERIC(10,1), tsu.RunningNetAllocationUserSpaceMB) > @UsageTempDbSize AND
     (
-        @IncludeLogin IS NULL 
+        @IncludeLogin IS NULL
         OR es.login_name IN (
             SELECT LTRIM(RTRIM(value)) FROM STRING_SPLIT(@IncludeLogin, ',')
         )
     )
     AND (
-        @ExcludeLogin IS NULL 
+        @ExcludeLogin IS NULL
         OR es.login_name NOT IN (
             SELECT LTRIM(RTRIM(value)) FROM STRING_SPLIT(@ExcludeLogin, ',')
         )
     )
     AND (
-        @IncludeProgramName IS NULL 
+        @IncludeProgramName IS NULL
         OR es.program_name IN (
             SELECT LTRIM(RTRIM(value)) FROM STRING_SPLIT(@IncludeProgramName, ',')
         )
     )
     AND (
-        @ExcludeProgramName IS NULL 
+        @ExcludeProgramName IS NULL
         OR es.program_name NOT IN (
             SELECT LTRIM(RTRIM(value)) FROM STRING_SPLIT(@ExcludeProgramName, ',')
         )
     )
-    AND CONVERT(NUMERIC(10,1), ssu.SessionNetAllocationMB) > @UsageTempDbSize 
-        
-ORDER BY
-    SessionSpaceMB DESC,
-    RunningSpaceMB DESC;
+;
 
 
 
 IF @WhatIf=1 BEGIN
     /* TempdbStats */
-    SELECT * FROM #TempdbStats;
+    SELECT * FROM @TempdbStats;
     /* TempSessionStats */
-    SELECT * FROM #TempSessionStats;
+    SELECT * FROM @TempSessionStats  ORDER BY SessionSpaceMB DESC;
     RETURN;
 END;
 
 
-/* Kill session Tempdb */
+/* Kill session Tempdb*/
 DECLARE @SessionId INT;
+DECLARE @LoginName NVARCHAR(256);
+DECLARE @ProgramName NVARCHAR(1000);
+DECLARE @RunningUserSpaceMB NUMERIC(10,1);
 DECLARE @KillCommand NVARCHAR(100);
-DECLARE @SessionCount INT;
+DECLARE @ReturnCode INT = 0;
+DECLARE @KillErrorMessage NVARCHAR(4000);
 
-SELECT @SessionCount = COUNT(*) FROM #TempSessionStats;
+DECLARE KillSessions CURSOR LOCAL FAST_FORWARD FOR
+SELECT session_id,LoginName,ProgramName,RunningUserSpaceMB
+FROM @TempSessionStats;
 
-IF @SessionCount = 0
+PRINT @UsageTempDbSize;
+
+OPEN KillSessions;
+FETCH NEXT FROM KillSessions INTO @SessionId, @LoginName, @ProgramName, @RunningUserSpaceMB;
+WHILE @@FETCH_STATUS = 0
 BEGIN
-    PRINT 'No session to kill. No process is consuming enough tempdb.';
-END
-ELSE
-BEGIN
-    DECLARE KillSessions CURSOR LOCAL FAST_FORWARD FOR
-    SELECT session_id
-    FROM #TempSessionStats;
+    SET @KillCommand = 'KILL ' + CAST(@SessionId AS NVARCHAR(10));
+    PRINT 'Executing: ' + @KillCommand;
+    BEGIN TRY
+        EXEC(@KillCommand);
 
-    OPEN KillSessions;
-    FETCH NEXT FROM KillSessions INTO @SessionId;
+        /* Insert into the log table*/
+        INSERT INTO dbo.ProtectTempdbLog (
+            SessionId, LoginName, ProgramName, RunningUserSpaceMB, ThresholdMB, StatementText
+        ) VALUES (
+            @SessionId, @LoginName, @ProgramName, @RunningUserSpaceMB, @UsageTempDbSize, @KillCommand
+        );
 
-    WHILE @@FETCH_STATUS = 0
-    BEGIN
-        SET @KillCommand = 'KILL ' + CAST(@SessionId AS NVARCHAR(10));
-        PRINT 'Executing : ' + @KillCommand;
-        BEGIN TRY
-            EXEC(@KillCommand);
-        END TRY
-        BEGIN CATCH
-            PRINT 'Error while killing the session ' + CAST(@SessionId AS NVARCHAR(10)) + ' : ' + ERROR_MESSAGE();
-        END CATCH
+        IF @ThrowException = 1
+            THROW 50001, @KillCommand, 1;
+    END TRY
+    BEGIN CATCH
+        SET @KillErrorMessage = 'Error in killing the session ' + CAST(@SessionId AS NVARCHAR(10)) + ': ' + ERROR_MESSAGE();
 
-        FETCH NEXT FROM KillSessions INTO @SessionId;
-    END;
+        SET @ReturnCode = 2;
 
-    CLOSE KillSessions;
-    DEALLOCATE KillSessions;
-END
+        IF @ThrowException = 1
+            THROW 50001, @KillErrorMessage, 1;
+       
+    END CATCH;
 
 
+    FETCH NEXT FROM KillSessions INTO @SessionId, @LoginName, @ProgramName, @RunningUserSpaceMB ;
+END;
 
+CLOSE KillSessions;
+DEALLOCATE KillSessions;
 
-
+RETURN @ReturnCode;

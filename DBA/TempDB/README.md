@@ -1,16 +1,16 @@
-# sp\_KillSessionTempdb
+# sp_KillSessionTempdb
 
-Hello, and welcome to the GitHub repository for `sp_KillSessionTempdb`! This is a free tool developed and maintained by [Architecture & Performance](https://www.architecture-performance.fr/) for SQL Server Database Administrators who need to quickly identify and terminate sessions excessively consuming `tempdb` space. It is particularly useful in scenarios where `tempdb` pressure is impacting performance, stability, or causing out-of-space conditions.
-
----
-
-## Why would you use sp\_KillSessionTempdb?
-
-In the same spirit as community-driven tools like [sp\_WhoIsActive](https://github.com/amachanic/sp_whoisactive),`sp_KillSessionTempdb` was built to address a common pain point: quickly identifying and managing the sessions causing the most `tempdb` usage. This is especially valuable in emergency situations or automated health-check scripts.
+`sp_KillSessionTempdb` is a free tool developed and maintained by [Architecture & Performance](https://www.architecture-performance.fr/) for SQL Server Database Administrators who need to quickly identify and terminate sessions excessively consuming `tempdb` space. It is particularly useful in scenarios where `tempdb` pressure is impacting performance, stability, or causing out-of-space conditions.
 
 ---
 
-## What does sp\_KillSessionTempdb do?
+## Why would you use sp_KillSessionTempdb?
+
+In the same spirit as community-driven tools like [sp_WhoIsActive](https://github.com/amachanic/sp_whoisactive), `sp_KillSessionTempdb` was built to address a common pain point: quickly identifying and managing the sessions causing the most `tempdb` usage. This is especially valuable in emergency situations or automated health-check scripts.
+
+---
+
+## What does sp_KillSessionTempdb do?
 
 `sp_KillSessionTempdb` analyzes session-level usage of `tempdb` and can optionally terminate the offending sessions that exceed a user-defined usage threshold. It includes flexible filters and safeguards to ensure the procedure behaves safely and predictably.
 
@@ -19,7 +19,9 @@ This tool supports the following capabilities:
 * **Filters**: Include or exclude sessions by login name or program name (SQL Server 2016+).
 * **Threshold logic**: Use a percentage or fixed size in MB to define what "excessive" usage means.
 * **Preview mode**: Use `@WhatIf = 1` to review which sessions would be terminated *without* killing them.
+* **Exception handling**: Use `@ThrowException = 1` to raise a SQL exception if any session fails to be killed (useful for alerting).
 * **Self-documenting**: Use `@Help = 1` to view in-script documentation and parameter descriptions.
+* **Logging**: Automatically logs all killed sessions to a dedicated audit table (`dbo.ProtectTempdbLog`).
 
 ---
 
@@ -31,7 +33,7 @@ First, install the stored procedure in your preferred system database (e.g., `ma
 
 ```sql
 EXEC sp_KillSessionTempdb;
-```
+````
 
 This will scan for sessions using more than 50% of `tempdb` (default) and terminate them if found.
 
@@ -55,7 +57,42 @@ This will show which sessions *would be* killed, but won’t actually run the `K
 | **@IncludeProgramName** `VARCHAR(MAX)` | Comma-separated list of program names to include (SQL Server 2016+ only).                                                                                                                                                               |
 | **@ExcludeProgramName** `VARCHAR(MAX)` | Comma-separated list of program names to exclude (SQL Server 2016+ only).                                                                                                                                                               |
 | **@WhatIf** `BIT`                      | If set to 1, only displays the sessions that would be killed. No actions taken. Default: `0`.                                                                                                                                           |
+| **@ThrowException** `BIT`              | If set to 1, the procedure will raise an exception (`THROW 50001`) if a session fails to be killed. Useful for monitoring/alerting. Default: `0`.                                                                                       |
 | **@Help** `BIT`                        | Displays inline help information and exits. Default: `0`.                                                                                                                                                                               |
+
+---
+
+## Logging and Audit Table
+
+All terminated sessions are logged in the table `dbo.ProtectTempdbLog`. This ensures a permanent, queryable audit trail of actions taken by `sp_KillSessionTempdb`.
+
+### Table Definition
+
+```sql
+CREATE TABLE dbo.ProtectTempdbLog (
+    SessionId INT,
+    LoginName NVARCHAR(256),
+    ProgramName NVARCHAR(1000),
+    RunningUserSpaceMB NUMERIC(10,1),
+    ThresholdMB NUMERIC(10,1),
+    StatementText NVARCHAR(MAX),
+    ExecutionDateTime DATETIME DEFAULT GETDATE()
+);
+```
+
+### Log Description
+
+| Column               | Description                                           |
+| -------------------- | ----------------------------------------------------- |
+| `SessionId`          | ID of the session that was terminated.                |
+| `LoginName`          | Login associated with the session.                    |
+| `ProgramName`        | Application name (e.g., SSMS, custom app).            |
+| `RunningUserSpaceMB` | Amount of `tempdb` space (in MB) used by the session. |
+| `ThresholdMB`        | Threshold (in MB) that triggered the termination.     |
+| `StatementText`      | SQL statement executed (e.g., `KILL 59`).             |
+| `ExecutionDateTime`  | Timestamp of when the session was killed.             |
+
+You can query this log for historical analysis, automation feedback, or compliance auditing.
 
 ---
 
@@ -81,6 +118,7 @@ This will show which sessions *would be* killed, but won’t actually run the `K
   * SQL Server version is below 2012.
   * Filtering options are used on unsupported versions (pre-2016).
 * Only sessions with non-zero tempdb usage are considered.
+* If `@ThrowException = 1` and a session fails to be terminated, an exception will be raised and execution will stop.
 * Long-running sessions with high tempdb usage should be carefully evaluated before termination.
 
 ---
@@ -96,7 +134,8 @@ This will show which sessions *would be* killed, but won’t actually run the `K
 
 * Same session list as above.
 * Followed by actual `KILL` commands executed for each matching session.
-* Error messages are printed for any failed `KILL` operations.
+* If `@ThrowException = 1`, the procedure will raise an error on any failed `KILL`, otherwise it will `PRINT` the error message.
+* All terminated sessions will be logged into `dbo.ProtectTempdbLog`.
 
 ---
 
@@ -111,6 +150,9 @@ EXEC sp_KillSessionTempdb @UsageTempDb = 100;
 
 -- Only kill sessions from specific programs:
 EXEC sp_KillSessionTempdb @IncludeProgramName = 'MyApp1,MyApp2';
+
+-- Raise error if any session fails to be killed:
+EXEC sp_KillSessionTempdb @UsageTempDb = 150, @ThrowException = 1;
 ```
 
 ---
