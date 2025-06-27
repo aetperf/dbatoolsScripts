@@ -430,8 +430,6 @@ DECLARE KillSessions CURSOR LOCAL FAST_FORWARD FOR
 SELECT session_id,LoginName,ProgramName,RunningUserSpaceMB
 FROM @TempSessionStats;
 
-PRINT @UsageTempDbSize;
-
 OPEN KillSessions;
 FETCH NEXT FROM KillSessions INTO @SessionId, @LoginName, @ProgramName, @RunningUserSpaceMB;
 WHILE @@FETCH_STATUS = 0

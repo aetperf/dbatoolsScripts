@@ -2,6 +2,8 @@
 
 `sp_KillSessionTempdb` is a free tool developed and maintained by [Architecture & Performance](https://www.architecture-performance.fr/) for SQL Server Database Administrators who need to quickly identify and terminate sessions excessively consuming `tempdb` space. It is particularly useful in scenarios where `tempdb` pressure is impacting performance, stability, or causing out-of-space conditions.
 
+![Tuto](assets/sp_ProtectTempdb.gif)
+
 ---
 
 ## Why would you use sp_KillSessionTempdb?
