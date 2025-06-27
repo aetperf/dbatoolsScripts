@@ -446,8 +446,7 @@ BEGIN
             @SessionId, @LoginName, @ProgramName, @RunningUserSpaceMB, @UsageTempDbSize, @KillCommand
         );
 
-        IF @ThrowException = 1
-            THROW 50001, @KillCommand, 1;
+
     END TRY
     BEGIN CATCH
         SET @KillErrorMessage = 'Error in killing the session ' + CAST(@SessionId AS NVARCHAR(10)) + ': ' + ERROR_MESSAGE();
