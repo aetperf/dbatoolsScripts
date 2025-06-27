@@ -1,20 +1,20 @@
-# sp_KillSessionTempdb
+# sp_ProtectTempdb
 
-`sp_KillSessionTempdb` is a free tool developed and maintained by [Architecture & Performance](https://www.architecture-performance.fr/) for SQL Server Database Administrators who need to quickly identify and terminate sessions excessively consuming `tempdb` space. It is particularly useful in scenarios where `tempdb` pressure is impacting performance, stability, or causing out-of-space conditions.
+`sp_ProtectTempdb` is a free tool developed and maintained by [Architecture & Performance](https://www.architecture-performance.fr/) for SQL Server Database Administrators who need to quickly identify and terminate sessions excessively consuming `tempdb` space. It is particularly useful in scenarios where `tempdb` pressure is impacting performance, stability, or causing out-of-space conditions.
 
 ![Tuto](assets/sp_ProtectTempdb.gif)
 
 ---
 
-## Why would you use sp_KillSessionTempdb?
+## Why would you use sp_ProtectTempdb?
 
-In the same spirit as community-driven tools like [sp_WhoIsActive](https://github.com/amachanic/sp_whoisactive), `sp_KillSessionTempdb` was built to address a common pain point: quickly identifying and managing the sessions causing the most `tempdb` usage. This is especially valuable in emergency situations or automated health-check scripts.
+In the same spirit as community-driven tools like [sp_WhoIsActive](https://github.com/amachanic/sp_whoisactive), `sp_ProtectTempdb` was built to address a common pain point: quickly identifying and managing the sessions causing the most `tempdb` usage. This is especially valuable in emergency situations or automated health-check scripts.
 
 ---
 
-## What does sp_KillSessionTempdb do?
+## What does sp_ProtectTempdb do?
 
-`sp_KillSessionTempdb` analyzes session-level usage of `tempdb` and can optionally terminate the offending sessions that exceed a user-defined usage threshold. It includes flexible filters and safeguards to ensure the procedure behaves safely and predictably.
+`sp_ProtectTempdb` analyzes session-level usage of `tempdb` and can optionally terminate the offending sessions that exceed a user-defined usage threshold. It includes flexible filters and safeguards to ensure the procedure behaves safely and predictably.
 
 This tool supports the following capabilities:
 
@@ -34,7 +34,7 @@ First, install the stored procedure in your preferred system database (e.g., `ma
 ### Basic Usage
 
 ```sql
-EXEC sp_KillSessionTempdb;
+EXEC sp_ProtectTempdb;
 ````
 
 This will scan for sessions using more than 50% of `tempdb` (default) and terminate them if found.
@@ -42,7 +42,7 @@ This will scan for sessions using more than 50% of `tempdb` (default) and termin
 ### Preview Sessions Before Killing
 
 ```sql
-EXEC sp_KillSessionTempdb @WhatIf = 1;
+EXEC sp_ProtectTempdb @WhatIf = 1;
 ```
 
 This will show which sessions *would be* killed, but won’t actually run the `KILL` commands.
@@ -66,7 +66,7 @@ This will show which sessions *would be* killed, but won’t actually run the `K
 
 ## Logging and Audit Table
 
-All terminated sessions are logged in the table `dbo.ProtectTempdbLog`. This ensures a permanent, queryable audit trail of actions taken by `sp_KillSessionTempdb`.
+All terminated sessions are logged in the table `dbo.ProtectTempdbLog`. This ensures a permanent, queryable audit trail of actions taken by `sp_ProtectTempdb`.
 
 ### Table Definition
 
@@ -145,16 +145,16 @@ You can query this log for historical analysis, automation feedback, or complian
 
 ```sql
 -- Simulate execution to identify high tempdb usage:
-EXEC sp_KillSessionTempdb @UsageTempDb = 0.7, @WhatIf = 1;
+EXEC sp_ProtectTempdb @UsageTempDb = 0.7, @WhatIf = 1;
 
 -- Terminate all sessions using more than 100MB:
-EXEC sp_KillSessionTempdb @UsageTempDb = 100;
+EXEC sp_ProtectTempdb @UsageTempDb = 100;
 
 -- Only kill sessions from specific programs:
-EXEC sp_KillSessionTempdb @IncludeProgramName = 'MyApp1,MyApp2';
+EXEC sp_ProtectTempdb @IncludeProgramName = 'MyApp1,MyApp2';
 
 -- Raise error if any session fails to be killed:
-EXEC sp_KillSessionTempdb @UsageTempDb = 150, @ThrowException = 1;
+EXEC sp_ProtectTempdb @UsageTempDb = 150, @ThrowException = 1;
 ```
 
 ---
