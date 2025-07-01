@@ -4,13 +4,13 @@
 
 ## Overview
 
-This PowerShell script (`restoreSchema.ps1`) is designed to perform a full restore of all objects within a specific schema from a source SQL Server database to a target database. This includes tables, indexes, constraints, and triggers. It's built with robust error handling and detailed logging to a dedicated logging database. The script also supports parallel execution and optional continuation on error, making it a powerful tool for database migrations and DevOps workflows.
+This PowerShell script (`restoreSchema.ps1`) is designed to perform a full restore of all objects and **associated data** within a specific schema from a source SQL Server database to a target database. This includes tables, indexes, constraints, triggers, as well as the transfer of table data. It's built with robust error handling and detailed logging to a dedicated logging database. The script also supports parallel execution and optional continuation on error, making it a powerful tool for database migrations and DevOps workflows.
 
 ## Features
 
-* **Comprehensive Schema Restoration**: Restores tables, indexes, constraints, and triggers for a specified schema.
+* **Comprehensive Schema Restoration**: Restores tables, indexes, constraints, triggers, and transfers the **associated data** for a specified schema.
 * **Detailed Logging**: All operations, including success and error codes, are logged to a SQL Server database (tables: `RestoreSchemaLog` and `RestoreSchemaLogDetail`).
-* **Parallel Execution**: Speed up the restoration process for tables by specifying a number of parallel threads.
+* **Parallel Execution**: Speed up the restoration process for tables and their data by specifying a number of parallel threads, allowing simultaneous data transfer to significantly reduce overall restore time.
 * **Error Handling**:
     * Option to continue processing even if an error occurs on a specific table (`-ContinueOnError`).
     * Checks for `SCHEMABINDING` views or functions that might prevent safe schema restoration.
