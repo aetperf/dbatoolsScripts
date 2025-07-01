@@ -6,6 +6,8 @@
 
 This PowerShell script (`restoreSchema.ps1`) is designed to perform a full restore of all objects and **associated data** within a specific schema from a source SQL Server database to a target database. This includes tables, indexes, constraints, triggers, as well as the transfer of table data. It's built with robust error handling and detailed logging to a dedicated logging database. The script also supports parallel execution and optional continuation on error, making it a powerful tool for database migrations and DevOps workflows.
 
+![Tuto](restoreSchema.gif)
+
 ## Features
 
 * **Comprehensive Schema Restoration**: Restores tables, indexes, constraints, triggers, and transfers the **associated data** for a specified schema.
