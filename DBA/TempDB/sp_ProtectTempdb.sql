@@ -34,7 +34,7 @@ ALTER   PROCEDURE [dbo].[sp_GetSessionPlan]
     @batch_text_out  NVARCHAR(MAX) OUTPUT,
     @stmt_text_out   NVARCHAR(MAX) OUTPUT,
     @plan_xml_out    XML OUTPUT,
-    @actual          BIT = 0 -- 0 = estimated (compilé), 1 = actual (en cours si possible)
+    @actual          BIT = 1 -- 0 = estimated (compilé), 1 = actual (en cours si possible)
 AS
 BEGIN
     /*
