@@ -71,14 +71,19 @@ All terminated sessions are logged in the table `dbo.ProtectTempdbLog`. This ens
 ### Table Definition
 
 ```sql
-CREATE TABLE dbo.ProtectTempdbLog (
-    SessionId INT,
-    LoginName NVARCHAR(256),
-    ProgramName NVARCHAR(1000),
-    RunningUserSpaceMB NUMERIC(10,1),
-    ThresholdMB NUMERIC(10,1),
-    StatementText NVARCHAR(MAX),
-    ExecutionDateTime DATETIME DEFAULT GETDATE()
+CREATE TABLE [dbo].[ProtectTempdbLog](
+	[SessionId] [int] NULL,
+	[LoginName] [nvarchar](256) NULL,
+	[ProgramName] [nvarchar](1000) NULL,
+	[RunningUserSpaceMB] [numeric](10, 1) NULL,
+	[RunningInternalSpaceMB] [numeric](10, 1) NULL,
+	[ThresholdMB] [numeric](10, 1) NULL,
+	[BatchText] [nvarchar](max) NULL,
+	[StatementText] [nvarchar](max) NULL,
+	[StatementPlan] [xml] NULL,
+	[ExecutionDateTime] [datetime] NULL DEFAULT getdate()
+) ON [PRIMARY] TEXTIMAGE_ON [PRIMARY]
+GO
 );
 ```
 
@@ -91,7 +96,9 @@ CREATE TABLE dbo.ProtectTempdbLog (
 | `ProgramName`        | Application name (e.g., SSMS, custom app).            |
 | `RunningUserSpaceMB` | Amount of `tempdb` space (in MB) used by the session. |
 | `ThresholdMB`        | Threshold (in MB) that triggered the termination.     |
-| `StatementText`      | SQL statement executed (e.g., `KILL 59`).             |
+| `BatchText`      | Batch executed (e.g., `EXEC sp_getorderkeys`).             |
+| `StatementText`      | SQL statement executed (e.g., `SELECT DISTINCT O_ORDERKEY FROM ORDERS`).             |
+| `StatementPlan`      | Actual Plan if possible Estimated if not possible to get actual one             |
 | `ExecutionDateTime`  | Timestamp of when the session was killed.             |
 
 You can query this log for historical analysis, automation feedback, or compliance auditing.
