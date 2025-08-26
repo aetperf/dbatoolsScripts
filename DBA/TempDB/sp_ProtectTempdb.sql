@@ -2,21 +2,130 @@ IF OBJECT_ID('dbo.sp_ProtectTempdb') IS NULL
   EXEC ('CREATE PROCEDURE dbo.sp_ProtectTempdb AS RETURN 0;');
 GO
 
+IF OBJECT_ID('dbo.sp_GetSessionPlan') IS NULL
+  EXEC ('CREATE PROCEDURE dbo.sp_GetSessionPlan AS RETURN 0;');
+GO
+
 /*Log Table*/
 IF OBJECT_ID('dbo.ProtectTempdbLog', 'U') IS NULL
-    CREATE TABLE dbo.ProtectTempdbLog (
-        SessionId INT,
-        LoginName NVARCHAR(256),
-        ProgramName NVARCHAR(1000),
-        RunningUserSpaceMB NUMERIC(10,1),
-        ThresholdMB NUMERIC(10,1),
-        StatementText NVARCHAR(MAX),
-        ExecutionDateTime DATETIME DEFAULT GETDATE()
-);
+CREATE TABLE [dbo].[ProtectTempdbLog](
+	[SessionId] [int] NULL,
+	[LoginName] [nvarchar](256) NULL,
+	[ProgramName] [nvarchar](1000) NULL,
+	[RunningUserSpaceMB] [numeric](10, 1) NULL,
+	[RunningInternalSpaceMB] [numeric](10, 1) NULL,
+	[ThresholdMB] [numeric](10, 1) NULL,
+	[BatchText] [nvarchar](max) NULL,
+	[StatementText] [nvarchar](max) NULL,
+	[StatementPlan] [xml] NULL,
+	[ExecutionDateTime] [datetime] NULL
+) ON [PRIMARY] TEXTIMAGE_ON [PRIMARY]
+GO
+
+ALTER TABLE [dbo].[ProtectTempdbLog] ADD  DEFAULT (getdate()) FOR [ExecutionDateTime]
 GO
 
 
-ALTER PROCEDURE [dbo].[sp_ProtectTempdb]
+GO
+
+
+ALTER   PROCEDURE [dbo].[sp_GetSessionPlan]
+    @session_id      SMALLINT,
+    @batch_text_out  NVARCHAR(MAX) OUTPUT,
+    @stmt_text_out   NVARCHAR(MAX) OUTPUT,
+    @plan_xml_out    XML OUTPUT,
+    @actual          BIT = 0 -- 0 = estimated (compilé), 1 = actual (en cours si possible)
+AS
+BEGIN
+    /*
+      Need : VIEW SERVER STATE.
+      Usage :
+        DECLARE @batch NVARCHAR(MAX), @stmt NVARCHAR(MAX), @plan XML;
+        EXEC dbo.sp_GetSessionPlan
+             @session_id = 53,
+             @batch_text_out = @batch OUTPUT,
+             @stmt_text_out  = @stmt  OUTPUT,
+             @plan_xml_out   = @plan  OUTPUT
+        SELECT @batch AS BatchText, @stmt AS StatementText, @plan AS PlanXml;
+    */
+    SET NOCOUNT ON;
+	SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
+
+	DECLARE @is_actualplan bit = @actual;
+
+    ;WITH req AS
+    (
+        SELECT TOP (1)
+            r.session_id,
+            r.request_id,
+            r.plan_handle,
+            r.sql_handle,
+            r.statement_start_offset,
+            r.statement_end_offset
+        FROM sys.dm_exec_requests AS r
+        WHERE r.session_id = @session_id
+        ORDER BY r.request_id
+    )
+    SELECT
+        @batch_text_out = st.text,
+        @stmt_text_out  =
+            CASE
+                WHEN req.statement_start_offset IS NULL THEN st.text
+                ELSE SUBSTRING(
+                        st.text,
+                        (req.statement_start_offset / 2) + 1,
+                        CASE req.statement_end_offset
+                            WHEN -1 THEN (DATALENGTH(st.text) / 2) - (req.statement_start_offset / 2) + 1
+                            ELSE (req.statement_end_offset - req.statement_start_offset) / 2 + 1
+                        END
+                     )
+            END
+    FROM req
+    CROSS APPLY sys.dm_exec_sql_text(req.sql_handle) AS st;
+
+    IF @batch_text_out IS NULL
+    BEGIN
+        RAISERROR('Aucune requête en cours pour session_id %d, ou permissions insuffisantes (VIEW SERVER STATE).', 16, 1, @session_id);
+        RETURN;
+    END
+
+    -- Get Plan
+        IF @actual = 1
+    BEGIN
+        -- Plan ACTUEL (avec stats runtime) pour la session en cours d’exécution
+        SELECT @plan_xml_out = qsx.query_plan
+        FROM sys.dm_exec_requests r
+        CROSS APPLY sys.dm_exec_query_statistics_xml(r.session_id) AS qsx
+        WHERE r.session_id = @session_id;
+
+        -- Si indisponible (session idle, version non supportée, etc.), fallback estimé
+        IF @plan_xml_out IS NULL
+        BEGIN
+            SELECT @plan_xml_out = qp.query_plan
+            FROM sys.dm_exec_requests r
+            CROSS APPLY sys.dm_exec_query_plan(r.plan_handle) AS qp
+            WHERE r.session_id = @session_id;
+        END
+    END
+    ELSE
+    BEGIN
+        -- Plan ESTIMÉ (compilé)
+        SELECT @plan_xml_out = qp.query_plan
+        FROM sys.dm_exec_requests r
+        CROSS APPLY sys.dm_exec_query_plan(r.plan_handle) AS qp
+        WHERE r.session_id = @session_id;
+    END
+
+    SELECT
+        @session_id       AS session_id,
+        @batch_text_out   AS batch_text,
+        @stmt_text_out    AS statement_text,
+        @plan_xml_out     AS execution_plan_xml,
+        @is_actualplan    AS is_actualplan;
+END
+
+
+ALTER   PROCEDURE [dbo].[sp_ProtectTempdb]
 --Use @Help=1 to see the parameters definitions
     @UsageTempDb DECIMAL(18,2) = 0.5
     , @IncludeLogin VARCHAR(MAX) = NULL
@@ -29,14 +138,15 @@ ALTER PROCEDURE [dbo].[sp_ProtectTempdb]
 
 AS
 SET NOCOUNT ON;
+SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
 
 DECLARE
     @Version VARCHAR(10) = NULL
     , @VersionDate DATETIME = NULL
 
 SELECT
-    @Version = '1.0'
-    , @VersionDate = '20250625';
+    @Version = '1.1'
+    , @VersionDate = '20250826';
 
 DECLARE @MaxTempMB DECIMAL(18,2);
 
@@ -312,7 +422,7 @@ FROM tempdb.sys.dm_db_file_space_usage
 
 
 DECLARE  @TempSessionStats TABLE (
-        session_id INT,
+		session_id SMALLINT,
         LoginName NVARCHAR(128),
         ProgramName NVARCHAR(128),
         SessionSpaceMB NUMERIC(10,1),
@@ -320,8 +430,7 @@ DECLARE  @TempSessionStats TABLE (
         SessionInternalSpaceMB NUMERIC(10,1),
         RunningSpaceMB NUMERIC(10,1),
         RunningUserSpaceMB NUMERIC(10,1),
-        RunningInternalSpaceMB NUMERIC(10,1),
-        StatementText NVARCHAR(MAX)
+        RunningInternalSpaceMB NUMERIC(10,1)
     );
 
 WITH SessionInfo AS (
@@ -349,8 +458,7 @@ SELECT
     CONVERT(NUMERIC(10,1), ssu.SessionNetAllocationInternalSpaceMB) AS SessionInternalSpaceMB,
     CONVERT(NUMERIC(10,1), tsu.RunningNetAllocationMB) AS RunningSpaceMB,
     CONVERT(NUMERIC(10,1), tsu.RunningNetAllocationUserSpaceMB) AS RunningUserSpaceMB,
-    CONVERT(NUMERIC(10,1), tsu.RunningNetAllocationInternalSpaceMB) AS RunningInternalSpaceMB,
-    t.[text] AS StatementText
+    CONVERT(NUMERIC(10,1), tsu.RunningNetAllocationInternalSpaceMB) AS RunningInternalSpaceMB
 FROM SessionInfo s
 INNER JOIN sys.dm_exec_sessions es
     ON s.session_id = es.session_id
@@ -377,9 +485,8 @@ LEFT JOIN (
     ON s.session_id = tsu.session_id
 LEFT JOIN sys.dm_exec_connections c
     ON c.session_id = s.session_id
-OUTER APPLY sys.dm_exec_sql_text(c.most_recent_sql_handle) t
 WHERE
-    CONVERT(NUMERIC(10,1), tsu.RunningNetAllocationUserSpaceMB) > @UsageTempDbSize AND
+    (CONVERT(NUMERIC(10,1), tsu.RunningNetAllocationUserSpaceMB) > @UsageTempDbSize) OR (CONVERT(NUMERIC(10,1), tsu.RunningNetAllocationInternalSpaceMB) > @UsageTempDbSize) AND
     (
         @IncludeLogin IS NULL
         OR es.login_name IN (
@@ -412,38 +519,50 @@ IF @WhatIf=1 BEGIN
     /* TempdbStats */
     SELECT * FROM @TempdbStats;
     /* TempSessionStats */
-    SELECT * FROM @TempSessionStats  ORDER BY SessionSpaceMB DESC;
+    SELECT * FROM @TempSessionStats ORDER BY SessionSpaceMB DESC;
     RETURN;
 END;
 
 
 /* Kill session Tempdb*/
-DECLARE @SessionId INT;
+DECLARE @SessionId SMALLINT;
 DECLARE @LoginName NVARCHAR(256);
 DECLARE @ProgramName NVARCHAR(1000);
 DECLARE @RunningUserSpaceMB NUMERIC(10,1);
+DECLARE @RunningInternalSpaceMB NUMERIC(10,1);
+DECLARE @StatementText NVARCHAR(MAX);
+DECLARE @BatchText NVARCHAR(MAX);
+DECLARE @StatementPLAN XML;
 DECLARE @KillCommand NVARCHAR(100);
 DECLARE @ReturnCode INT = 0;
 DECLARE @KillErrorMessage NVARCHAR(4000);
 
 DECLARE KillSessions CURSOR LOCAL FAST_FORWARD FOR
-SELECT session_id,LoginName,ProgramName,RunningUserSpaceMB
-FROM @TempSessionStats;
+SELECT session_id,LoginName,ProgramName,RunningUserSpaceMB,RunningInternalSpaceMB
+FROM @TempSessionStats
+;
 
 OPEN KillSessions;
-FETCH NEXT FROM KillSessions INTO @SessionId, @LoginName, @ProgramName, @RunningUserSpaceMB;
+FETCH NEXT FROM KillSessions INTO @SessionId, @LoginName, @ProgramName, @RunningUserSpaceMB,@RunningInternalSpaceMB;
 WHILE @@FETCH_STATUS = 0
 BEGIN
     SET @KillCommand = 'KILL ' + CAST(@SessionId AS NVARCHAR(10));
     PRINT 'Executing: ' + @KillCommand;
     BEGIN TRY
+		
+		--Get Sessions batch, statement and plan for logging
+		EXEC dbo.sp_GetSessionPlan @session_id = @SessionId,
+                                   @batch_text_out = @BatchText OUTPUT,
+                                   @stmt_text_out  = @StatementText  OUTPUT,
+                                   @plan_xml_out   = @StatementPLAN  OUTPUT;
+
         EXEC(@KillCommand);
 
         /* Insert into the log table*/
         INSERT INTO dbo.ProtectTempdbLog (
-            SessionId, LoginName, ProgramName, RunningUserSpaceMB, ThresholdMB, StatementText
+            SessionId, LoginName, ProgramName, RunningUserSpaceMB,RunningInternalSpaceMB, ThresholdMB, BatchText, StatementText,StatementPlan
         ) VALUES (
-            @SessionId, @LoginName, @ProgramName, @RunningUserSpaceMB, @UsageTempDbSize, @KillCommand
+            @SessionId, @LoginName, @ProgramName, @RunningUserSpaceMB,@RunningInternalSpaceMB, @UsageTempDbSize,@BatchText, @StatementText,@StatementPlan
         );
 
 
@@ -459,10 +578,13 @@ BEGIN
     END CATCH;
 
 
-    FETCH NEXT FROM KillSessions INTO @SessionId, @LoginName, @ProgramName, @RunningUserSpaceMB ;
+    FETCH NEXT FROM KillSessions INTO @SessionId, @LoginName, @ProgramName, @RunningUserSpaceMB,@RunningInternalSpaceMB ;
 END;
 
 CLOSE KillSessions;
 DEALLOCATE KillSessions;
 
 RETURN @ReturnCode;
+GO
+
+
