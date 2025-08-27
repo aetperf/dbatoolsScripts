@@ -547,13 +547,13 @@ DECLARE @KillCommand NVARCHAR(100);
 DECLARE @ReturnCode INT = 0;
 DECLARE @KillErrorMessage NVARCHAR(4000);
 
-DECLARE KillSessions CURSOR LOCAL FAST_FORWARD FOR
+DECLARE SessionsToKill CURSOR LOCAL FAST_FORWARD FOR
 SELECT session_id,DatabaseName,LoginName,ProgramName,RunningUserSpaceMB,RunningInternalSpaceMB
 FROM @TempSessionStats
 ;
 
-OPEN KillSessions;
-FETCH NEXT FROM KillSessions INTO @SessionId, @DatabaseName, @LoginName, @ProgramName, @RunningUserSpaceMB,@RunningInternalSpaceMB;
+OPEN SessionsToKill;
+FETCH NEXT FROM SessionsToKill INTO @SessionId, @DatabaseName, @LoginName, @ProgramName, @RunningUserSpaceMB,@RunningInternalSpaceMB;
 WHILE @@FETCH_STATUS = 0
 BEGIN
     SET @KillCommand = 'KILL ' + CAST(@SessionId AS NVARCHAR(10));
@@ -588,11 +588,11 @@ BEGIN
     END CATCH;
 
 
-    FETCH NEXT FROM KillSessions INTO @SessionId, @DatabaseName,  @LoginName, @ProgramName, @RunningUserSpaceMB,@RunningInternalSpaceMB ;
+    FETCH NEXT FROM SessionsToKill INTO @SessionId, @DatabaseName,  @LoginName, @ProgramName, @RunningUserSpaceMB,@RunningInternalSpaceMB ;
 END;
 
-CLOSE KillSessions;
-DEALLOCATE KillSessions;
+CLOSE SessionsToKill;
+DEALLOCATE SessionsToKill;
 
 RETURN @ReturnCode;
 GO
