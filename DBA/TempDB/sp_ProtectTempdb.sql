@@ -18,15 +18,14 @@ CREATE TABLE [dbo].[ProtectTempdbLog](
 	[BatchText] [nvarchar](max) NULL,
 	[StatementText] [nvarchar](max) NULL,
 	[StatementPlan] [xml] NULL,
-	[ExecutionDateTime] [datetime] NULL
+	[ExecutionDateTime] [datetime] NULL DEFAULT (getdate())
 ) ON [PRIMARY] TEXTIMAGE_ON [PRIMARY]
 GO
 
-ALTER TABLE [dbo].[ProtectTempdbLog] ADD  DEFAULT (getdate()) FOR [ExecutionDateTime]
-GO
 
 
-GO
+
+
 
 
 ALTER   PROCEDURE [dbo].[sp_GetSessionPlan]
@@ -123,7 +122,7 @@ BEGIN
         @plan_xml_out     AS execution_plan_xml,
         @is_actualplan    AS is_actualplan;
 END
-
+GO
 
 ALTER   PROCEDURE [dbo].[sp_ProtectTempdb]
 --Use @Help=1 to see the parameters definitions
@@ -586,5 +585,4 @@ DEALLOCATE KillSessions;
 
 RETURN @ReturnCode;
 GO
-
 
