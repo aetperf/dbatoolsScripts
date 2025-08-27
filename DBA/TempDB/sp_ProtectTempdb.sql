@@ -1,3 +1,5 @@
+
+
 IF OBJECT_ID('dbo.sp_ProtectTempdb') IS NULL
   EXEC ('CREATE PROCEDURE dbo.sp_ProtectTempdb AS RETURN 0;');
 GO
@@ -10,6 +12,7 @@ GO
 IF OBJECT_ID('dbo.ProtectTempdbLog', 'U') IS NULL
 CREATE TABLE [dbo].[ProtectTempdbLog](
 	[SessionId] [int] NULL,
+    [DatabaseName] [sysname] NULL,
 	[LoginName] [nvarchar](256) NULL,
 	[ProgramName] [nvarchar](1000) NULL,
 	[RunningUserSpaceMB] [numeric](10, 1) NULL,
@@ -235,15 +238,19 @@ IF @Help = 1 BEGIN
 
     Table Definition:
 
-        CREATE TABLE dbo.ProtectTempdbLog (
-            SessionId INT,
-            LoginName NVARCHAR(256),
-            ProgramName NVARCHAR(1000),
-            RunningUserSpaceMB NUMERIC(10,1),
-            ThresholdMB NUMERIC(10,1),
-            StatementText NVARCHAR(MAX),
-            ExecutionDateTime DATETIME DEFAULT GETDATE()
-        );
+        CREATE TABLE [dbo].[ProtectTempdbLog](
+        [SessionId] [int] NULL,
+        [DatabaseName] [sysname] NULL,
+        [LoginName] [nvarchar](256) NULL,
+        [ProgramName] [nvarchar](1000) NULL,
+        [RunningUserSpaceMB] [numeric](10, 1) NULL,
+        [RunningInternalSpaceMB] [numeric](10, 1) NULL,
+        [ThresholdMB] [numeric](10, 1) NULL,
+        [BatchText] [nvarchar](max) NULL,
+        [StatementText] [nvarchar](max) NULL,
+        [StatementPlan] [xml] NULL,
+        [ExecutionDateTime] [datetime] NULL DEFAULT (getdate())
+    ;
 
     Usage Notes:
     - Use @WhatIf = 1 to preview results safely.
@@ -262,29 +269,30 @@ IF @Help = 1 BEGIN
 
 /* SQL Server version check */
 DECLARE
-      @SQL NVARCHAR(4000)
-      , @SQLVersion NVARCHAR(128)
-      , @SQLVersionMajor DECIMAL(10,2)
-      , @SQLVersionMinor DECIMAL(10,2);
+    @SQL NVARCHAR(4000)
+    , @SQLVersion NVARCHAR(128)
+    , @SQLVersionMajor DECIMAL(10,2)
+    , @SQLVersionMinor DECIMAL(10,2);
 
 IF OBJECT_ID('tempdb..#SQLVersions') IS NOT NULL
-      DROP TABLE #SQLVersions;
+    DROP TABLE #SQLVersions;
 
 CREATE TABLE #SQLVersions (
-      VersionName VARCHAR(10)
-      , VersionNumber DECIMAL(10,2)
-      );
+    VersionName VARCHAR(10)
+    , VersionNumber DECIMAL(10,2)
+    );
 
 INSERT #SQLVersions
 VALUES
-      ('2008', 10)
-      , ('2008 R2', 10.5)
-      , ('2012', 11)
-      , ('2014', 12)
-      , ('2016', 13)
-      , ('2017', 14)
-      , ('2019', 15)
-      , ('2022', 16);
+    ('2008', 10)
+    , ('2008 R2', 10.5)
+    , ('2012', 11)
+    , ('2014', 12)
+    , ('2016', 13)
+    , ('2017', 14)
+    , ('2019', 15)
+    , ('2022', 16)
+    , ('2025', 17);
 
 /* SQL Server version */
 SELECT @SQLVersion = CAST(SERVERPROPERTY('ProductVersion') AS NVARCHAR(128));
@@ -295,12 +303,12 @@ SELECT
 
 
 /* check for unsupported version */
-IF @SQLVersionMajor < 11 BEGIN
+IF @SQLVersionMajor < 13 BEGIN
     PRINT '
 /*
     *** Unsupported SQL Server Version ***
 
-    sp_ProtectTempdb is supported only for execution on SQL Server 2012 and later.
+    sp_ProtectTempdb is supported only for execution on SQL Server 2016 and later.
 
     For more information about the limitations of sp_ProtectTempdb, execute
     using @Help = 1
@@ -422,6 +430,7 @@ FROM tempdb.sys.dm_db_file_space_usage
 
 DECLARE  @TempSessionStats TABLE (
 		session_id SMALLINT,
+        DatabaseName SYSNAME,
         LoginName NVARCHAR(128),
         ProgramName NVARCHAR(128),
         SessionSpaceMB NUMERIC(10,1),
@@ -434,14 +443,14 @@ DECLARE  @TempSessionStats TABLE (
 
 WITH SessionInfo AS (
     SELECT DISTINCT
-        u.session_id
+        u.session_id, u.database_id
     FROM (
-        SELECT session_id
+        SELECT session_id, ss1.database_id
         FROM tempdb.sys.dm_db_session_space_usage ss1 WITH (NOLOCK)
         WHERE session_id <> @@SPID
             AND (user_objects_alloc_page_count > 0 OR internal_objects_alloc_page_count > 0)
         UNION
-        SELECT session_id
+        SELECT session_id,ts2.database_id
         FROM tempdb.sys.dm_db_task_space_usage ts2 WITH (NOLOCK)
         WHERE session_id <> @@SPID
             AND (user_objects_alloc_page_count > 0 OR internal_objects_alloc_page_count > 0)
@@ -450,6 +459,7 @@ WITH SessionInfo AS (
 INSERT INTO @TempSessionStats
 SELECT
     s.session_id,
+    DB_NAME(s.database_id) AS DatabaseName,
     es.login_name AS LoginName,
     es.program_name AS ProgramName,
     CONVERT(NUMERIC(10,1), ssu.SessionNetAllocationMB) AS SessionSpaceMB,
@@ -525,6 +535,7 @@ END;
 
 /* Kill session Tempdb*/
 DECLARE @SessionId SMALLINT;
+DECLARE @DatabaseName SYSNAME;
 DECLARE @LoginName NVARCHAR(256);
 DECLARE @ProgramName NVARCHAR(1000);
 DECLARE @RunningUserSpaceMB NUMERIC(10,1);
@@ -537,12 +548,12 @@ DECLARE @ReturnCode INT = 0;
 DECLARE @KillErrorMessage NVARCHAR(4000);
 
 DECLARE KillSessions CURSOR LOCAL FAST_FORWARD FOR
-SELECT session_id,LoginName,ProgramName,RunningUserSpaceMB,RunningInternalSpaceMB
+SELECT session_id,DatabaseName,LoginName,ProgramName,RunningUserSpaceMB,RunningInternalSpaceMB
 FROM @TempSessionStats
 ;
 
 OPEN KillSessions;
-FETCH NEXT FROM KillSessions INTO @SessionId, @LoginName, @ProgramName, @RunningUserSpaceMB,@RunningInternalSpaceMB;
+FETCH NEXT FROM KillSessions INTO @SessionId, @DatabaseName, @LoginName, @ProgramName, @RunningUserSpaceMB,@RunningInternalSpaceMB;
 WHILE @@FETCH_STATUS = 0
 BEGIN
     SET @KillCommand = 'KILL ' + CAST(@SessionId AS NVARCHAR(10));
@@ -559,9 +570,9 @@ BEGIN
 
         /* Insert into the log table*/
         INSERT INTO dbo.ProtectTempdbLog (
-            SessionId, LoginName, ProgramName, RunningUserSpaceMB,RunningInternalSpaceMB, ThresholdMB, BatchText, StatementText,StatementPlan
+            SessionId, DatabaseName, LoginName, ProgramName, RunningUserSpaceMB,RunningInternalSpaceMB, ThresholdMB, BatchText, StatementText,StatementPlan
         ) VALUES (
-            @SessionId, @LoginName, @ProgramName, @RunningUserSpaceMB,@RunningInternalSpaceMB, @UsageTempDbSize,@BatchText, @StatementText,@StatementPlan
+            @SessionId, @DatabaseName,@LoginName, @ProgramName, @RunningUserSpaceMB,@RunningInternalSpaceMB, @UsageTempDbSize,@BatchText, @StatementText,@StatementPlan
         );
 
 
@@ -577,7 +588,7 @@ BEGIN
     END CATCH;
 
 
-    FETCH NEXT FROM KillSessions INTO @SessionId, @LoginName, @ProgramName, @RunningUserSpaceMB,@RunningInternalSpaceMB ;
+    FETCH NEXT FROM KillSessions INTO @SessionId, @DatabaseName,  @LoginName, @ProgramName, @RunningUserSpaceMB,@RunningInternalSpaceMB ;
 END;
 
 CLOSE KillSessions;
