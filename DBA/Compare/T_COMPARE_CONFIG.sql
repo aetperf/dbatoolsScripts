@@ -5,7 +5,7 @@ IF  EXISTS (SELECT * FROM sys.objects WHERE object_id = OBJECT_ID(N'[dbo].[T_COM
 DROP TABLE [dbo].[T_COMPARE_CONFIG]
 GO
 
-*
+
 
 CREATE TABLE [dbo].[T_COMPARE_CONFIG](
 	[testname] [nvarchar](255) NOT NULL,
