@@ -541,6 +541,7 @@ DECLARE @ProgramName NVARCHAR(1000);
 DECLARE @RunningUserSpaceMB NUMERIC(10,1);
 DECLARE @RunningInternalSpaceMB NUMERIC(10,1);
 DECLARE @StatementText NVARCHAR(MAX);
+DECLARE @StatementPlan XML;
 DECLARE @BatchText NVARCHAR(MAX);
 DECLARE @StatementPLAN XML;
 DECLARE @KillCommand NVARCHAR(100);
@@ -564,7 +565,7 @@ BEGIN
 		EXEC dbo.sp_GetSessionPlan @session_id = @SessionId,
                                    @batch_text_out = @BatchText OUTPUT,
                                    @stmt_text_out  = @StatementText  OUTPUT,
-                                   @plan_xml_out   = @StatementPLAN  OUTPUT;
+                                   @plan_xml_out   = @StatementPlan  OUTPUT;
 
         EXEC(@KillCommand);
 
@@ -596,4 +597,3 @@ DEALLOCATE SessionsToKill;
 
 RETURN @ReturnCode;
 GO
-
