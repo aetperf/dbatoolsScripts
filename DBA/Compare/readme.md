@@ -1,7 +1,8 @@
 
 # sp\_CompareTables
 
-![sp_CompareTables](images/sp_CompareTables.png)
+
+![sp_CompareTables](images/sp_CompareTables.png){ width="400" height="400" }
 
 ## Overview
 
