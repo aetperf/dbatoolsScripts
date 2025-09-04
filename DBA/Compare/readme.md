@@ -1,6 +1,8 @@
 
 # sp\_CompareTables
 
+![sp_CompareTables](images/sp_CompareTables.png)
+
 ## Overview
 
 `sp_CompareTables` is a stored procedure for SQL Server that compares two tables (or views) defined in the configuration table `T_COMPARE_CONFIG`.
