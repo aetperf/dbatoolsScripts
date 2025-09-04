@@ -2,7 +2,7 @@
 # sp\_CompareTables
 
 
-![sp_CompareTables](images/sp_CompareTables.png){ width="400" height="400" }
+![sp_CompareTables](images/sp_CompareTables.png)
 
 ## Overview
 
