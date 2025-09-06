@@ -34,7 +34,8 @@ Sample usage :
 EXEC [dbo].[sp_CompareTables] @testname='tpch10_orders', @exclude_columns='o_comment,o_clerk'
 
 Sample usage :
-EXEC [dbo].[sp_CompareTables] @testname='tpch10_orders', @exclude_columns='o_comment,o_clerk'
+EXEC [dbo].[sp_CompareTables] @testname='tpch10_orders', @exclude_columns='o_comment,o_clerk', @getsamplekeys=1, @keydiffthreshold = 1
+
 
 */
 AS
