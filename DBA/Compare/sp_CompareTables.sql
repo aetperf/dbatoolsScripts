@@ -1,14 +1,12 @@
-
-
-
 CREATE OR ALTER PROCEDURE [dbo].[sp_CompareTables]
 (
-    @testname         NVARCHAR(255),
-    @include_columns  NVARCHAR(MAX) = NULL,     -- CSV : columns explicitly tested
-    @exclude_columns  NVARCHAR(MAX) = NULL,     -- CSV : columns to exclude
-    @cutoff           BIGINT        = 1000000,  -- cutoff for except temp results (set 0 will use full compare)
-    @getsamplekeys    BIT           = 0,        -- no sampling for retrieving keys when diff
-    @debug            BIT           = 0         -- prints dynamic SQL if 1
+    @testname           NVARCHAR(255),            -- testname (found in T_COMPARE_CONFIG table)
+    @include_columns    NVARCHAR(MAX) = NULL,     -- CSV : columns explicitly tested
+    @exclude_columns    NVARCHAR(MAX) = NULL,     -- CSV : columns to exclude
+    @cutoff             BIGINT        = 1000000,  -- cutoff for except temp results (set 0 will use full compare)
+    @getsamplekeys      BIT           = 0,        -- no sampling for retrieving keys when diff
+    @keydiffthreshold   BIGINT        = 0,        -- tolerated keydiff differences to pursue to col_diff
+    @debug              BIT           = 0         -- prints dynamic SQL if 1
 )
 /*
 Will compare 2 tables (or views) defined in the T_COMPARE_CONFIG table using an except technic 
@@ -31,6 +29,9 @@ VALUES
  ,'tpch_copy','tpch_10','orders'
  ,'tpch_test','dbo','orders_15M'
  ,'o_orderkey')
+
+Sample usage :
+EXEC [dbo].[sp_CompareTables] @testname='tpch10_orders', @exclude_columns='o_comment,o_clerk'
 
 Sample usage :
 EXEC [dbo].[sp_CompareTables] @testname='tpch10_orders', @exclude_columns='o_comment,o_clerk'
@@ -166,7 +167,7 @@ BEGIN
     -------------------------------------------------------------------------
     DECLARE @key_list NVARCHAR(MAX) = N'';
     SELECT @key_list = STRING_AGG(
-        QUOTENAME(k.col) + CASE WHEN s.system_type_id IN (167,175,231,239) THEN ' COLLATE DATABASE_DEFAULT' ELSE '' END
+        QUOTENAME(k.col) + CASE WHEN s.system_type_id IN (167,175,231,239) THEN ' COLLATE Latin1_General_100_BIN2_UTF8' ELSE '' END
         , ', ')
     FROM @Keys k
     JOIN #src_cols s ON s.name = k.col;
@@ -194,26 +195,87 @@ BEGIN
         (@testname, @testrunid, @testdate, @src_db, @src_schema, @src_table, @tgt_db, @tgt_schema, @tgt_table, @key_csv, N'count(*)', @diff,0);
 
     IF @diff <> 0
-        RETURN;  -- counts differ -> stop
+    BEGIN
+        GOTO DISPLAYRESULTS;  -- counts differ -> display results and stop
+        RAISERROR('Count rows are different for source and target. Stop at row count control step', 10, 1);        
+    END
 
     -------------------------------------------------------------------------
     -- 7) Test 2: key set consistency (EXCEPT src -> tgt). Stop if any diff.
     -------------------------------------------------------------------------
     DECLARE @key_diff BIGINT = 0;
+    DECLARE @cutoffquery NVARCHAR(max); 
+    DECLARE @samplekeys VARCHAR(4000);
+    DECLARE @is_cutted bit = 1;
 
-    SET @sql = N'
-        WITH d AS (
-            SELECT ' + @key_list + N' FROM ' + @src_3part + N'
-            EXCEPT
-            SELECT ' + @key_list + N' FROM ' + @tgt_3part + N'
-        )
-        SELECT @d = COUNT(*) FROM d;';
+    IF @cutoff = 0
+        SET @cutoffquery = N'SELECT * FROM d';
+    ELSE
+        SET @cutoffquery = N'SELECT TOP ('+CAST(@cutoff as nvarchar(20))+') * FROM d';
+
+    IF @getsamplekeys = 0
+        BEGIN
+            SET @sql = N'
+                WITH d AS (
+                    SELECT ' + @key_list + N'
+                    FROM ' + @src_3part + N'
+                    EXCEPT
+                    SELECT ' + @key_list + N'
+                    FROM ' + @tgt_3part + N'
+                ),
+                cutoffquery as ('+@cutoffquery+')
+                SELECT @d = COUNT(*) , @samplekeys=NULL                       
+                FROM cutoffquery
+                option(hash join);';
+            END
+        ELSE
+        BEGIN
+        SET @sql = N'
+            WITH d AS (
+                SELECT ''only in source'' origin,' + @key_list + N'
+                FROM ' + @src_3part + N'
+                EXCEPT
+                SELECT ''only in source'' origin,' + @key_list + N'
+                FROM ' + @tgt_3part + N'
+                UNION ALL
+                SELECT ''only in target'' origin,' + @key_list + N'
+                FROM ' + @tgt_3part + N'
+                EXCEPT
+                SELECT ''only in target'' origin,' + @key_list + N'
+                FROM ' + @src_3part + N'
+            ),
+            cutoffquery as ('+@cutoffquery+')
+            SELECT * INTO #cutoffquery from cutoffquery;
+
+            WITH
+            samplekey AS (
+            SELECT (SELECT top 10 * FROM #cutoffquery FOR JSON PATH, WITHOUT_ARRAY_WRAPPER) AS jsonsamplekeys            
+            )
+            SELECT @key_diff = COUNT_BIG(*), @samplekeys=MAX(jsample.jsonsamplekeys)                       
+            FROM #cutoffquery cross apply (select jsonsamplekeys from samplekey) jsample;';
+        END
     IF @debug=1 EXEC sp_executesql @PrintLongSQL, N'@s nvarchar(max)', @s=@sql;
 
-    EXEC sp_executesql @sql, N'@d BIGINT OUTPUT', @d=@key_diff OUTPUT;
+    EXEC sp_executesql @sql, N'@key_diff BIGINT OUTPUT, @samplekeys VARCHAR(4000) OUTPUT', @key_diff=@key_diff OUTPUT,@samplekeys=@samplekeys OUTPUT;
 
-    IF @key_diff <> 0
-        RETURN;  -- key discrepancies -> stop
+    
+    IF ((@cutoff=0) OR (@key_diff<@cutoff))
+        SET @is_cutted=0;
+
+    INSERT INTO dbo.T_COMPARE_RESULTS
+        (testname,testrunid,testdate,sourcedatabase,sourceschema,sourcetable,targetdatabase,targetschema,targettable,keycolumns,columnstested,diffcount,samplekeysetwhere,iscutted)
+    VALUES
+        (@testname, @testrunid, @testdate, @src_db, @src_schema, @src_table, @tgt_db, @tgt_schema, @tgt_table, @key_csv, N'check(pk)', @key_diff,@samplekeys,@is_cutted);
+
+
+    IF (@key_diff > @keydiffthreshold)
+    BEGIN
+        DECLARE @key_diff_string VARCHAR(21), @keydiffthreshold_string VARCHAR(21);
+        SELECT @key_diff_string=CAST(@key_diff AS varchar(21)), @keydiffthreshold_string=CAST(@keydiffthreshold AS varchar(21));
+
+        RAISERROR('Key sets differ for source and target : %s rows with differences. Stop at key control step due to keydiff threshold set at %s rows', 10,1, @key_diff_string, @keydiffthreshold_string);
+        GOTO DISPLAYRESULTS;  -- key discrepancies -> display results and stop
+    END;
 
     -------------------------------------------------------------------------
     -- 8) Common comparable columns (non-key, non text/ntext/image, non-computed)
@@ -245,12 +307,9 @@ BEGIN
     -------------------------------------------------------------------------
     -- 9) Per-column diffs: single EXCEPT (src -> tgt) per column
     -------------------------------------------------------------------------
-    DECLARE @col SYSNAME, @is_char BIT, @col_count INT, @col_expr NVARCHAR(400), @col_diff BIGINT, @col_distinct BIGINT,@samplekeys VARCHAR(4000),@cutoffquery nvarchar(max),@loopcounter INT=0,@stopwatch datetime, @elaspedtimems int;    
+    DECLARE @col SYSNAME, @is_char BIT, @col_count INT, @col_expr NVARCHAR(400), @col_diff BIGINT, @col_distinct BIGINT,@loopcounter INT=0,@stopwatch datetime, @elaspedtimems int;    
 
-    IF @cutoff = 0
-        SET @cutoffquery = N'SELECT * FROM d';
-    ELSE
-        SET @cutoffquery = N'SELECT TOP ('+CAST(@cutoff as nvarchar(20))+') * FROM d';
+    
 
 
     DECLARE col_cur CURSOR LOCAL FAST_FORWARD FOR
@@ -280,7 +339,7 @@ BEGIN
                     FROM ' + @tgt_3part + N'
                 ),
                 cutoffquery as ('+@cutoffquery+')
-                SELECT @d = COUNT(*), @dd = COUNT(DISTINCT testcol) , @samplekeys=NULL                       
+                SELECT @d = COUNT_BIG(*), @dd = COUNT_BIG(DISTINCT testcol) , @samplekeys=NULL                       
                 FROM cutoffquery
                 option(hash join);';
             END
@@ -301,7 +360,7 @@ BEGIN
             samplekey AS (
             SELECT (SELECT top 10 '+@key_list+' FROM #cutoffquery FOR JSON PATH, WITHOUT_ARRAY_WRAPPER) AS jsonsamplekeys            
             )
-            SELECT @d = COUNT(*), @dd = COUNT(DISTINCT testcol) , @samplekeys=MAX(jsample.jsonsamplekeys)                       
+            SELECT @d = COUNT_BIG(*), @dd = COUNT_BIG(DISTINCT testcol) , @samplekeys=MAX(jsample.jsonsamplekeys)                       
             FROM #cutoffquery cross apply (select jsonsamplekeys from samplekey) jsample;';
         END
 
@@ -309,8 +368,6 @@ BEGIN
 
         SET @col_diff = 0;
         EXEC sp_executesql @sql, N'@d BIGINT OUTPUT, @dd BIGINT OUTPUT, @samplekeys VARCHAR(4000) OUTPUT', @d=@col_diff OUTPUT, @dd=@col_distinct OUTPUT,@samplekeys=@samplekeys OUTPUT;
-
-        DECLARE @is_cutted bit = 1;
 
         IF ((@cutoff=0) OR (@col_diff<@cutoff))
           SET @is_cutted=0;
@@ -334,8 +391,8 @@ BEGIN
     DROP TABLE IF EXISTS #src_cols;
     DROP TABLE IF EXISTS #tgt_cols;
 
+DISPLAYRESULTS:
+
     SELECT * FROM dbo.T_COMPARE_RESULTS where testrunid=@testrunid;
 
 END
-
-GO
