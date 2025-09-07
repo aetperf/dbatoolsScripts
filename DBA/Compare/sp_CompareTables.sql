@@ -5,7 +5,7 @@ CREATE OR ALTER PROCEDURE [dbo].[sp_CompareTables]
     @exclude_columns    NVARCHAR(MAX) = NULL,     -- CSV : columns to exclude
     @cutoff             BIGINT        = 1000000,  -- cutoff for except temp results (set 0 will use full compare)
     @getsamplekeys      BIT           = 0,        -- no sampling for retrieving keys when diff
-    @keydiffthreshold   BIGINT        = 0,        -- tolerated keydiff differences to pursue to col_diff
+    @keydiffthreshold   INT           = 0,        -- tolerated keydiff differences to pursue to col_diff
     @debug              BIT           = 0         -- prints dynamic SQL if 1
 )
 /*
@@ -204,7 +204,7 @@ BEGIN
     -------------------------------------------------------------------------
     -- 7) Test 2: key set consistency (EXCEPT src -> tgt). Stop if any diff.
     -------------------------------------------------------------------------
-    DECLARE @key_diff BIGINT = 0;
+    DECLARE @key_diff INT = 0;
     DECLARE @cutoffquery NVARCHAR(max); 
     DECLARE @samplekeys VARCHAR(4000);
     DECLARE @is_cutted bit = 1;
@@ -225,7 +225,7 @@ BEGIN
                     FROM ' + @tgt_3part + N'
                 ),
                 cutoffquery as ('+@cutoffquery+')
-                SELECT @d = COUNT(*) , @samplekeys=NULL                       
+                SELECT @key_diff = COUNT(*) , @samplekeys=NULL                       
                 FROM cutoffquery
                 option(hash join);';
             END
@@ -252,12 +252,12 @@ BEGIN
             samplekey AS (
             SELECT (SELECT top 10 * FROM #cutoffquery FOR JSON PATH, WITHOUT_ARRAY_WRAPPER) AS jsonsamplekeys            
             )
-            SELECT @key_diff = COUNT_BIG(*), @samplekeys=MAX(jsample.jsonsamplekeys)                       
+            SELECT @key_diff = COUNT(*), @samplekeys=MAX(jsample.jsonsamplekeys)                       
             FROM #cutoffquery cross apply (select jsonsamplekeys from samplekey) jsample;';
         END
     IF @debug=1 EXEC sp_executesql @PrintLongSQL, N'@s nvarchar(max)', @s=@sql;
 
-    EXEC sp_executesql @sql, N'@key_diff BIGINT OUTPUT, @samplekeys VARCHAR(4000) OUTPUT', @key_diff=@key_diff OUTPUT,@samplekeys=@samplekeys OUTPUT;
+    EXEC sp_executesql @sql, N'@key_diff INT OUTPUT, @samplekeys VARCHAR(4000) OUTPUT', @key_diff=@key_diff OUTPUT,@samplekeys=@samplekeys OUTPUT;
 
     
     IF ((@cutoff=0) OR (@key_diff<@cutoff))
@@ -271,10 +271,8 @@ BEGIN
 
     IF (@key_diff > @keydiffthreshold)
     BEGIN
-        DECLARE @key_diff_string VARCHAR(21), @keydiffthreshold_string VARCHAR(21);
-        SELECT @key_diff_string=CAST(@key_diff AS varchar(21)), @keydiffthreshold_string=CAST(@keydiffthreshold AS varchar(21));
-
-        RAISERROR('Key sets differ for source and target : %s rows with differences. Stop at key control step due to keydiff threshold set at %s rows', 10,1, @key_diff_string, @keydiffthreshold_string);
+        
+        RAISERROR('Key sets differ for source and target : %d rows with differences. Stop at key control step due to keydiff threshold set at %d rows', 10,1, @key_diff, @keydiffthreshold);
         GOTO DISPLAYRESULTS;  -- key discrepancies -> display results and stop
     END;
 
@@ -308,7 +306,7 @@ BEGIN
     -------------------------------------------------------------------------
     -- 9) Per-column diffs: single EXCEPT (src -> tgt) per column
     -------------------------------------------------------------------------
-    DECLARE @col SYSNAME, @is_char BIT, @col_count INT, @col_expr NVARCHAR(400), @col_diff BIGINT, @col_distinct BIGINT,@loopcounter INT=0,@stopwatch datetime, @elaspedtimems int;    
+    DECLARE @col SYSNAME, @is_char BIT, @col_count INT, @col_expr NVARCHAR(400), @col_diff INT, @col_distinct INT,@loopcounter INT=0,@stopwatch datetime, @elaspedtimems int;    
 
     
 
@@ -340,7 +338,7 @@ BEGIN
                     FROM ' + @tgt_3part + N'
                 ),
                 cutoffquery as ('+@cutoffquery+')
-                SELECT @d = COUNT_BIG(*), @dd = COUNT_BIG(DISTINCT testcol) , @samplekeys=NULL                       
+                SELECT @d = COUNT(*), @dd = COUNT(DISTINCT testcol) , @samplekeys=NULL                       
                 FROM cutoffquery
                 option(hash join);';
             END
@@ -361,14 +359,14 @@ BEGIN
             samplekey AS (
             SELECT (SELECT top 10 '+@key_list+' FROM #cutoffquery FOR JSON PATH, WITHOUT_ARRAY_WRAPPER) AS jsonsamplekeys            
             )
-            SELECT @d = COUNT_BIG(*), @dd = COUNT_BIG(DISTINCT testcol) , @samplekeys=MAX(jsample.jsonsamplekeys)                       
+            SELECT @d = COUNT(*), @dd = COUNT(DISTINCT testcol) , @samplekeys=MAX(jsample.jsonsamplekeys)                       
             FROM #cutoffquery cross apply (select jsonsamplekeys from samplekey) jsample;';
         END
 
         IF @debug=1 EXEC sp_executesql @PrintLongSQL, N'@s nvarchar(max)', @s=@sql;
 
         SET @col_diff = 0;
-        EXEC sp_executesql @sql, N'@d BIGINT OUTPUT, @dd BIGINT OUTPUT, @samplekeys VARCHAR(4000) OUTPUT', @d=@col_diff OUTPUT, @dd=@col_distinct OUTPUT,@samplekeys=@samplekeys OUTPUT;
+        EXEC sp_executesql @sql, N'@d INT OUTPUT, @dd INT OUTPUT, @samplekeys VARCHAR(4000) OUTPUT', @d=@col_diff OUTPUT, @dd=@col_distinct OUTPUT,@samplekeys=@samplekeys OUTPUT;
 
         IF ((@cutoff=0) OR (@col_diff<@cutoff))
           SET @is_cutted=0;
