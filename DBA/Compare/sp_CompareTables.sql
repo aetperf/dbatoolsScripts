@@ -359,7 +359,7 @@ BEGIN
             samplekey AS (
             SELECT (SELECT top 10 '+@key_list+' FROM #cutoffquery FOR JSON PATH, WITHOUT_ARRAY_WRAPPER) AS jsonsamplekeys            
             )
-            SELECT @d = COUNT_BIG(*), @dd = COUNT_BIG(DISTINCT '+QUOTENAME(@col)+') , @samplekeys=MAX(jsample.jsonsamplekeys)                       
+            SELECT @d = COUNT_BIG(*), @dd = COUNT_BIG(DISTINCT '+QUOTENAME(@col)+') , @samplekeys=''(''+REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(MAX(jsample.jsonsamplekeys),''},{'','') OR (''),''{'','''') ,''}'',''''),'':'',''=''),'','','' AND '') +'')''                    
             FROM #cutoffquery cross apply (select jsonsamplekeys from samplekey) jsample;';
         END
 
