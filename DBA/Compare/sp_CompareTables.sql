@@ -225,7 +225,7 @@ BEGIN
                     FROM ' + @tgt_3part + N'
                 ),
                 cutoffquery as ('+@cutoffquery+')
-                SELECT @d = COUNT(*) , @samplekeys=NULL                       
+                SELECT @key_diff = COUNT(*) , @samplekeys=NULL                       
                 FROM cutoffquery
                 option(hash join);';
             END
