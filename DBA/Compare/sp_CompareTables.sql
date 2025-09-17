@@ -168,7 +168,7 @@ BEGIN
     -------------------------------------------------------------------------
     DECLARE @key_list NVARCHAR(MAX) = N'';
     SELECT @key_list = STRING_AGG(
-        QUOTENAME(k.col) + CASE WHEN s.system_type_id IN (167,175,231,239) THEN ' COLLATE Latin1_General_100_BIN2_UTF8' ELSE '' END
+        QUOTENAME(k.col) + CASE WHEN s.system_type_id IN (167,175,231,239) THEN ' COLLATE Latin1_General_100_BIN2_UTF8 '+ QUOTENAME(k.col) ELSE '' END
         , ', ')
     FROM @Keys k
     JOIN #src_cols s ON s.name = k.col;
@@ -225,7 +225,7 @@ BEGIN
                     FROM ' + @tgt_3part + N'
                 ),
                 cutoffquery as ('+@cutoffquery+')
-                SELECT @d = COUNT(*) , @samplekeys=NULL                       
+                SELECT @key_diff  = COUNT(*) , @samplekeys=NULL                       
                 FROM cutoffquery
                 option(hash join);';
             END
@@ -324,7 +324,7 @@ BEGIN
 
     WHILE @@FETCH_STATUS = 0
     BEGIN
-        SET @col_expr = QUOTENAME(@col) + CASE WHEN @is_char = 1 THEN ' COLLATE Latin1_General_100_BIN2_UTF8' ELSE '' END + N' AS testcol';
+        SET @col_expr = QUOTENAME(@col) + CASE WHEN @is_char = 1 THEN ' COLLATE Latin1_General_100_BIN2_UTF8' ELSE '' END + N' AS '+QUOTENAME(@col);
         SET @loopcounter+=1;
 
 		SET @stopwatch=GETDATE();		
@@ -340,7 +340,7 @@ BEGIN
                     FROM ' + @tgt_3part + N'
                 ),
                 cutoffquery as ('+@cutoffquery+')
-                SELECT @d = COUNT_BIG(*), @dd = COUNT_BIG(DISTINCT testcol) , @samplekeys=NULL                       
+                SELECT @d = COUNT_BIG(*), @dd = COUNT_BIG(DISTINCT '+QUOTENAME(@col)+') , @samplekeys=NULL                       
                 FROM cutoffquery
                 option(hash join);';
             END
@@ -361,7 +361,7 @@ BEGIN
             samplekey AS (
             SELECT (SELECT top 10 '+@key_list+' FROM #cutoffquery FOR JSON PATH, WITHOUT_ARRAY_WRAPPER) AS jsonsamplekeys            
             )
-            SELECT @d = COUNT_BIG(*), @dd = COUNT_BIG(DISTINCT testcol) , @samplekeys=MAX(jsample.jsonsamplekeys)                       
+            SELECT @d = COUNT_BIG(*), @dd = COUNT_BIG(DISTINCT '+QUOTENAME(@col)+') , @samplekeys=MAX(jsample.jsonsamplekeys)                       
             FROM #cutoffquery cross apply (select jsonsamplekeys from samplekey) jsample;';
         END
 
