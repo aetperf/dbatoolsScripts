@@ -6,6 +6,7 @@ CREATE OR ALTER PROCEDURE [dbo].[sp_CompareTables]
     @cutoff             BIGINT        = 1000000,  -- cutoff for except temp results (set 0 will use full compare)
     @getsamplekeys      BIT           = 0,        -- no sampling for retrieving keys when diff
     @keydiffthreshold   INT           = 0,        -- tolerated keydiff differences to pursue to col_diff
+    @showmediffsamples  BIT           = 0,        -- show sample differences
     @debug              BIT           = 0         -- prints dynamic SQL if 1
 )
 /*
@@ -393,5 +394,40 @@ BEGIN
 DISPLAYRESULTS:
 
     SELECT * FROM dbo.T_COMPARE_RESULTS where testrunid=@testrunid;
+
+    IF @showmediffsamples=1 AND EXISTS(SELECT 1 FROM dbo.T_COMPARE_RESULTS where testrunid=@testrunid and samplekeysetwhere IS NOT NULL)
+    BEGIN
+        DECLARE @vsql NVARCHAR(MAX);
+        DECLARE vsql_cur CURSOR LOCAL FAST_FORWARD FOR
+        SELECT 
+        'SELECT 
+        ''' + quotename(sourcedatabase)+'.'+quotename(sourceschema)+'.'+quotename(sourcetable)+''' origin,'
+        + keycolumns + ', CAST(' + columnstested + ' AS VARCHAR(max)) COLLATE Latin1_General_100_BIN2_UTF8 '+ columnstested
+        + ' FROM ' + quotename(sourcedatabase)+'.'+quotename(sourceschema)+'.'+quotename(sourcetable)
+        + ' WHERE '+samplekeysetwhere
+        + ' UNION ALL ' 
+        + 'SELECT 
+        ''' + quotename(targetdatabase)+'.'+quotename(targetschema)+'.'+quotename(targettable)+''' origin,'
+        + keycolumns + ',CAST(' + columnstested + ' AS VARCHAR(max)) COLLATE Latin1_General_100_BIN2_UTF8 '+ columnstested
+        + ' FROM ' + quotename(targetdatabase)+'.'+quotename(targetschema)+'.'+quotename(targettable)
+        + ' WHERE '+samplekeysetwhere 
+        + ' ORDER BY 2,1'
+        FROM [dbo].[T_COMPARE_RESULTS]
+        WHERE 
+        testrunid=@testrunid 
+        and diffcount >0 
+        and samplekeysetwhere is not null 
+        and columnstested <> 'check(pk)';
+
+        OPEN vsql_cur;
+        FETCH NEXT FROM vsql_cur INTO @vsql;
+        WHILE @@FETCH_STATUS = 0
+        BEGIN
+            IF @debug=1 EXEC sp_executesql @PrintLongSQL, N'@s nvarchar(max)', @s=@vsql;
+            EXEC sp_executesql @vsql;
+            FETCH NEXT FROM vsql_cur INTO @vsql;
+        END
+    END
+
 
 END
