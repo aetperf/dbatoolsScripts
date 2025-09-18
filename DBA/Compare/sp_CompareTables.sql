@@ -37,7 +37,8 @@ EXEC [dbo].[sp_CompareTables] @testname='tpch10_orders', @exclude_columns='o_com
 Sample usage :
 EXEC [dbo].[sp_CompareTables] @testname='tpch10_orders', @exclude_columns='o_comment,o_clerk', @getsamplekeys=1, @keydiffthreshold = 1
 
-
+Sample usage :
+EXEC [dbo].[sp_CompareTables] @testname='tpch10_orders', @exclude_columns='o_comment,o_clerk', @getsamplekeys=1, @keydiffthreshold = 1, @showmediffsamples=1
 */
 AS
 BEGIN
@@ -398,21 +399,37 @@ DISPLAYRESULTS:
 
     SELECT * FROM dbo.T_COMPARE_RESULTS where testrunid=@testrunid;
 
+    -- Count number on columns in the keycolumns (number of commas +1)
+    DECLARE @keycolcount INT = (LEN(@key_csv) - LEN(REPLACE(@key_csv, ',', ''))) + 1;
+    -- generate the order by clause for the key columns position and terminate by 1 (origin) using a while loop
+    DECLARE @i INT=1;
+    DECLARE @keyorderby NVARCHAR(MAX) = N' ORDER BY ';
+    WHILE @i <= @keycolcount
+    BEGIN
+        IF @i > 1 SET @keyorderby += N', ';
+        SET @keyorderby += CAST(@i+1 AS NVARCHAR(10)); -- +1 to skip origin column
+        SET @i += 1;
+    END;
+    SET @keyorderby += N',1 '; -- terminate by origin column
+
+
+
+
     IF (@showmediffsamples=1 and @getsamplekeys=1)
     BEGIN
         SELECT 
         'SELECT ' +@CRLF
         +'''' + quotename(sourcedatabase)+'.'+quotename(sourceschema)+'.'+quotename(sourcetable)+''' origin,'+ @CRLF
-        + [keycolumns] + ', CAST(' + columnstested + ' AS VARCHAR(max)) COLLATE Latin1_General_100_BIN2_UTF8 ' + columnstested + @CRLF
+        + [keycolumns] +','''+columnstested+'''columntested_name'+ ',CAST(' + columnstested + ' AS VARCHAR(max)) COLLATE Latin1_General_100_BIN2_UTF8 columntested_value' +@CRLF
         + ' FROM ' + quotename(sourcedatabase)+'.'+quotename(sourceschema)+'.'+quotename(sourcetable) +@CRLF
         + ' WHERE ' + samplekeysetwhere + @CRLF
         + ' UNION ALL ' + @CRLF
         + 'SELECT ' + @CRLF
         + '''' + quotename(targetdatabase)+'.'+quotename(targetschema)+'.'+quotename(targettable)+''' origin,' +@CRLF
-        + [keycolumns] + ',CAST(' + columnstested + ' AS VARCHAR(max)) COLLATE Latin1_General_100_BIN2_UTF8 '+ columnstested +@CRLF
+        + [keycolumns] +','''+columnstested+'''columntested_name'+ ',CAST(' + columnstested + ' AS VARCHAR(max)) COLLATE Latin1_General_100_BIN2_UTF8 columntested_value' +@CRLF
         + ' FROM ' + quotename(targetdatabase)+'.'+quotename(targetschema)+'.'+quotename(targettable) +@CRLF
         + ' WHERE '+ samplekeysetwhere + @CRLF
-        + ' ORDER BY 2,1' vsqlquery
+        + @keyorderby vsqlquery
         INTO #GetDiffQuery
         FROM [dbo].[T_COMPARE_RESULTS] tcr
         WHERE 
