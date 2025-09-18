@@ -29,6 +29,7 @@ CREATE OR ALTER PROCEDURE [dbo].[sp_CompareTables]
     @exclude_columns  NVARCHAR(MAX) = NULL,     -- CSV : columns to exclude
     @cutoff           BIGINT        = 1000000,  -- cutoff for EXCEPT temp results (0 = no cutoff, use full compare)
     @getsamplekeys    BIT           = 0,        -- if 1, return sample keyset WHERE clause for one differing row
+    @showmediffsamples BIT           = 0,       -- if 1, return datasets with sample for each differing column (up to 10 rows per column)
     @debug            BIT           = 0         -- if 1, prints all dynamic SQL generated
 )
 ```
@@ -122,6 +123,7 @@ CREATE TABLE dbo.T_COMPARE_RESULTS
   * Default: `1,000,000`.
   * Use `0` for full comparison (may be slower).
 * `@getsamplekeys` – If `1`, generate `samplekeysetwhere` up to 10 rows with differing keyset.
+* `@showmediffsamples` – If `1`, return datasets with sample for each differing column (up to 10 rows per column).
 * `@debug` – If `1`, prints all generated dynamic SQL for inspection.
 
 ---
@@ -155,6 +157,18 @@ EXEC [dbo].[sp_CompareTables]
      @debug           = 0;                      -- set to 1 to see generated SQL
 ```
 
+```sql
+EXEC [dbo].[sp_CompareTables] 
+     @testname        = 'tpch10_orders',        -- test name from T_COMPARE_CONFIG (where to find source/target)
+    --@include_columns = 'o_orderkey,o_custkey', -- include columns from comparison if needed
+     @exclude_columns = 'o_comment,o_clerk',    -- exclude columns from comparison if needed
+     @cutoff          = 1000000,                -- max rows to process output from EXCEPT (Nota compare are done on all rows, @cutoff is just for performance and limiting the output in the temp table), setting to 0 will use full dump of EXCEPT
+     @getsamplekeys   = 1,                      -- retrieve up to 10 sample keysets for differing rows
+     @showmediffsamples = 1,                    -- retrieve datasets with sample for each differing column (up to 10 rows per column)
+     @debug           = 0;                      -- set to 1 to see generated SQL
+
+```
+
 ## Some screenshots
 
 ### T\_COMPARE\_RESULTS after running the procedure :
@@ -166,3 +180,6 @@ EXEC [dbo].[sp_CompareTables]
 ### Messages during the run :
 
 ![Messages during the run](images/sp_CompareTables_Messages.jpg)
+
+### Messages during the run with @showmediffsamples = 1 :
+![Messages during the run with @showmediffsamples = 1](images/sp_CompareTables_showmediffsamples.jpg)
