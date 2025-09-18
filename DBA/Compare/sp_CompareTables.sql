@@ -360,7 +360,10 @@ BEGIN
             samplekey AS (
             SELECT (SELECT top 10 '+@key_list+' FROM #cutoffquery FOR JSON PATH, WITHOUT_ARRAY_WRAPPER) AS jsonsamplekeys            
             )
-            SELECT @d = COUNT_BIG(*), @dd = COUNT_BIG(DISTINCT '+QUOTENAME(@col)+') , @samplekeys=''(''+REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(MAX(jsample.jsonsamplekeys),''},{'','') OR (''),''{'','''') ,''}'',''''),'':'',''=''),'','','' AND '') +'')''                    
+            SELECT 
+            @d = COUNT_BIG(*), 
+            @dd = COUNT_BIG(DISTINCT '+QUOTENAME(@col)+') , 
+            @samplekeys=''(''+REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(MAX(jsample.jsonsamplekeys),'':"'','':''''''),''",'','''''',''),''"}'',''''''}''),''},{'','') OR (''),''{'','''') ,''}'',''''),'':'',''=''),'','','' AND '') +'')''                    
             FROM #cutoffquery cross apply (select jsonsamplekeys from samplekey) jsample;';
         END
 
@@ -395,37 +398,45 @@ DISPLAYRESULTS:
 
     SELECT * FROM dbo.T_COMPARE_RESULTS where testrunid=@testrunid;
 
-    IF @showmediffsamples=1 AND EXISTS(SELECT 1 FROM dbo.T_COMPARE_RESULTS where testrunid=@testrunid and samplekeysetwhere IS NOT NULL)
+    IF (@showmediffsamples=1 and @getsamplekeys=1)
     BEGIN
+        SELECT 
+        'SELECT ' +@CRLF
+        +'''' + quotename(sourcedatabase)+'.'+quotename(sourceschema)+'.'+quotename(sourcetable)+''' origin,'+ @CRLF
+        + [keycolumns] + ', CAST(' + columnstested + ' AS VARCHAR(max)) COLLATE Latin1_General_100_BIN2_UTF8 ' + columnstested + @CRLF
+        + ' FROM ' + quotename(sourcedatabase)+'.'+quotename(sourceschema)+'.'+quotename(sourcetable) +@CRLF
+        + ' WHERE ' + samplekeysetwhere + @CRLF
+        + ' UNION ALL ' + @CRLF
+        + 'SELECT ' + @CRLF
+        + '''' + quotename(targetdatabase)+'.'+quotename(targetschema)+'.'+quotename(targettable)+''' origin,' +@CRLF
+        + [keycolumns] + ',CAST(' + columnstested + ' AS VARCHAR(max)) COLLATE Latin1_General_100_BIN2_UTF8 '+ columnstested +@CRLF
+        + ' FROM ' + quotename(targetdatabase)+'.'+quotename(targetschema)+'.'+quotename(targettable) +@CRLF
+        + ' WHERE '+ samplekeysetwhere + @CRLF
+        + ' ORDER BY 2,1' vsqlquery
+        INTO #GetDiffQuery
+        FROM [dbo].[T_COMPARE_RESULTS] tcr
+        WHERE 
+        tcr.testrunid=@testrunid 
+        and tcr.diffcount > 0
+        and tcr.columnstested not in (N'count(*)',N'check(pk)');
+
+        if (@debug=1)
+            SELECT vsqlquery FROM #GetDiffQuery;
+        
         DECLARE @vsql NVARCHAR(MAX);
         DECLARE vsql_cur CURSOR LOCAL FAST_FORWARD FOR
-        SELECT 
-        'SELECT 
-        ''' + quotename(sourcedatabase)+'.'+quotename(sourceschema)+'.'+quotename(sourcetable)+''' origin,'
-        + keycolumns + ', CAST(' + columnstested + ' AS VARCHAR(max)) COLLATE Latin1_General_100_BIN2_UTF8 '+ columnstested
-        + ' FROM ' + quotename(sourcedatabase)+'.'+quotename(sourceschema)+'.'+quotename(sourcetable)
-        + ' WHERE '+samplekeysetwhere
-        + ' UNION ALL ' 
-        + 'SELECT 
-        ''' + quotename(targetdatabase)+'.'+quotename(targetschema)+'.'+quotename(targettable)+''' origin,'
-        + keycolumns + ',CAST(' + columnstested + ' AS VARCHAR(max)) COLLATE Latin1_General_100_BIN2_UTF8 '+ columnstested
-        + ' FROM ' + quotename(targetdatabase)+'.'+quotename(targetschema)+'.'+quotename(targettable)
-        + ' WHERE '+samplekeysetwhere 
-        + ' ORDER BY 2,1'
-        FROM [dbo].[T_COMPARE_RESULTS]
-        WHERE 
-        testrunid=@testrunid 
-        and diffcount >0 
-        and samplekeysetwhere is not null 
-        and columnstested <> 'check(pk)';
+            SELECT * FROM #GetDiffQuery;
+        
+
 
         OPEN vsql_cur;
         FETCH NEXT FROM vsql_cur INTO @vsql;
         WHILE @@FETCH_STATUS = 0
-        BEGIN
+        BEGIN            
             IF @debug=1 EXEC sp_executesql @PrintLongSQL, N'@s nvarchar(max)', @s=@vsql;
             EXEC sp_executesql @vsql;
             FETCH NEXT FROM vsql_cur INTO @vsql;
+            SET @vsql='';
         END
     END
 
