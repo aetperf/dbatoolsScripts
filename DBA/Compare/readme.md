@@ -181,5 +181,5 @@ EXEC [dbo].[sp_CompareTables]
 
 ![Messages during the run](images/sp_CompareTables_Messages.jpg)
 
-### Messages during the run with @showmediffsamples = 1 :
+### Example output of the procedure in SSMS with @showmediffsamples = 1 :
 ![Messages during the run with @showmediffsamples = 1](images/sp_CompareTables_showmediffsamples.jpg)
