@@ -20,100 +20,24 @@ Then for each non-keys columns that sastisfy @include_columns and @exclude_param
  The program return it's results and store them in the T_COMPARE_RESULTS table.
 
 sample test :
-INSERT INTO [dbo].[T_COMPARE_CONFIG] USE [DBATOOLS]
-
-GO
-
-/****** Object:  StoredProcedure [dbo].[sp_CompareTables]    Script Date: 24/09/2025 15:33:37 ******/
-
-SET ANSI_NULLS ON
-
-GO
-
-SET QUOTED_IDENTIFIER ON
-
-GO
-
-ALTER   PROCEDURE [dbo].[sp_CompareTables]
-
-(
-
-    @testname           NVARCHAR(255),            -- testname (found in T_COMPARE_CONFIG table)
-
-    @include_columns    NVARCHAR(MAX) = NULL,     -- CSV : columns explicitly tested
-
-    @exclude_columns    NVARCHAR(MAX) = NULL,     -- CSV : columns to exclude
-
-    @cutoff             BIGINT        = 1000000,  -- cutoff for except temp results (set 0 will use full compare)
-
-    @getsamplekeys      BIT           = 0,        -- no sampling for retrieving keys when diff
-
-    @keydiffthreshold   INT           = 0,        -- tolerated keydiff differences to pursue to col_diff
-
-    @showmediffsamples  BIT           = 0,        -- show sample differences
-
-    @debug              BIT           = 0         -- prints dynamic SQL if 1
-
-)
-
-/*
-
-Will compare 2 tables (or views) defined in the T_COMPARE_CONFIG table using an except technic
-
-A first test is made to compare rows count for source and target.
-
-If the row counts are identical the program continue.
-
-Then the keys are compared. If OK the program continue.
-
-Then for each non-keys columns that sastisfy @include_columns and @exclude_params (or all if not defined),
-
- the program compare key columns + the tested columns by except and store the diff count
-
- 
-
-The program return it's results and store them in the T_COMPARE_RESULTS table.
-
- 
-
-sample test :
-
-INSERT INTO [dbo].[T_COMPARE_CONFIG]
-
-([testname] ,
-
-[sourcedatabase],[sourceschema],[sourcetable]
-
+INSERT INTO [dbo].[T_COMPARE_CONFIG] 
+([testname] ,[sourcedatabase],[sourceschema],[sourcetable]
 ,[targetdatabase],[targetschema],[targettable]
-
 ,[keycolumns])
-
 VALUES
-
 ('tpch10_orders'
-
 ,'tpch_copy','tpch_10','orders'
-
 ,'tpch_test','dbo','orders_15M'
-
-,'o_orderkey')
+,'o_orderkey');
 
  
-
 Sample usage :
-
 EXEC [dbo].[sp_CompareTables] @testname='tpch10_orders', @exclude_columns='o_comment,o_clerk'
 
- 
-
-Sample usage :
-
+ Sample usage :
 EXEC [dbo].[sp_CompareTables] @testname='tpch10_orders', @exclude_columns='o_comment,o_clerk', @getsamplekeys=1, @keydiffthreshold = 1
 
- 
-
 Sample usage :
-
 EXEC [dbo].[sp_CompareTables] @testname='tpch10_orders', @exclude_columns='o_comment,o_clerk', @getsamplekeys=1, @keydiffthreshold = 1, @showmediffsamples=1
 
 */
