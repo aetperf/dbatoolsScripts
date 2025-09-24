@@ -10,16 +10,22 @@ CREATE OR ALTER   PROCEDURE [dbo].[sp_CompareTables]
     @debug              BIT           = 0         -- prints dynamic SQL if 1
 )
 /*
+Author : Romain Ferraton
+Version : 1.0 - 2025-09-24
+
+Descripption : 
 Will compare 2 tables (or views) defined in the T_COMPARE_CONFIG table using an except technic 
 A first test is made to compare rows count for source and target.
 If the row counts are identical the program continue.
-Then the keys are compared. If OK the program continue.
+Then the keys are then compared. If OK (diffcount < @keydiffthreshold) the program continue.
 Then for each non-keys columns that sastisfy @include_columns and @exclude_params (or all if not defined), 
  the program compare key columns + the tested columns by except and store the diff count 
 
  The program return it's results and store them in the T_COMPARE_RESULTS table.
+    If @showmediffsamples=1 and @getsamplekeys=1 the program will also display samples of differences for each column with differences.
+    if this case several datasets will be returned (one for each column with differences)
 
-sample test :
+generate a sample test :
 INSERT INTO [dbo].[T_COMPARE_CONFIG] 
 ([testname] ,
  [sourcedatabase],[sourceschema],[sourcetable]
@@ -36,6 +42,11 @@ EXEC [dbo].[sp_CompareTables] @testname='tpch10_orders', @exclude_columns='o_com
 
 Sample usage :
 EXEC [dbo].[sp_CompareTables] @testname='tpch10_orders', @exclude_columns='o_comment,o_clerk', @getsamplekeys=1, @keydiffthreshold = 1
+
+Sample usage :
+EXEC [dbo].[sp_CompareTables] @testname='tpch10_orders', @exclude_columns='o_comment,o_clerk', @getsamplekeys=1, @keydiffthreshold = 1, @showmediffsamples=1
+
+
 
 
 */
