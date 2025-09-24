@@ -27,7 +27,7 @@ CREATE TABLE [dbo].[T_COMPARE_RESULTS](
 	[columnstested] [sysname] NOT NULL,
 	[diffcount] [bigint] NOT NULL,
 	[diffdistinct] [bigint] NULL,
-	[samplekeysetwhere] [varchar](4000) NULL,
+	[samplekeysetwhere] [varchar](max) NULL,
 	[iscutted] bit NOT NULL
  CONSTRAINT [PK_T_COMPARE_RESULTS] PRIMARY KEY CLUSTERED 
 (
