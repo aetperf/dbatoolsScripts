@@ -14,7 +14,7 @@ WITH ranked AS
                 ISNULL(l.[role_name], N'#NOROLE#')
             ORDER BY l.controldate DESC
         ) AS rn
-    FROM dbo.LoginDbRoles AS l
+    FROM [security].LoginDbRoles AS l
 )
 SELECT
     controldate, login_name, login_type, is_disabled, default_database,
