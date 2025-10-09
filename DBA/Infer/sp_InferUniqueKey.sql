@@ -151,6 +151,52 @@ BEGIN
         SELECT rn, colname, column_id FROM #candidates ORDER BY rn;
     END;
 
+    -- First Test is when using all columns as key we find duplicates or not
+    -- If we find duplicates we can continue but we already know that no unique key exists so no @winner
+    -- But we can store the number of duplicates found will all columns as the new ground for duplicates minimum
+    -- If we find a smaller combination with the same number of duplicates we can stop searching earlier 
+
+    DECLARE @isAllColsUnique bit;
+    DECLARE @minimalDuplicates bigint = 0;
+
+    DECLARE @allCols nvarchar(max);
+    SELECT @allCols = STRING_AGG(QUOTENAME(colname), N',') WITHIN GROUP (ORDER BY rn)
+    FROM #candidates;
+    DECLARE @sqlAllCols nvarchar(max) = N'
+        DECLARE @d BIGINT;
+        SELECT @d = COUNT(*) FROM (
+            SELECT ' + @allCols + N'
+            FROM ' + @fullName + N'
+            GROUP BY ' + @allCols + N'
+            HAVING COUNT(*) > 1
+        ) s;
+        SELECT @d AS dup_count;';
+    DECLARE @tAllCols TABLE(dup_count bigint);
+    IF @debug = 1
+    BEGIN
+        DECLARE @dbgMsgAllCols nvarchar(200) = N'sp_inferUniqueKey: testing all columns as key first to check if unique key exists...';
+        RAISERROR('%s', 10, 1, @dbgMsgAllCols) WITH NOWAIT;
+        RAISERROR(N'SQL: %s', 10, 1, @sqlAllCols) WITH NOWAIT;
+    END;
+    INSERT @tAllCols EXEC sp_executesql @sqlAllCols;
+    DECLARE @dupCountAllCols bigint;
+    SELECT @dupCountAllCols = dup_count FROM @tAllCols;
+
+    IF @dupCountAllCols = 0
+        SET @isAllColsUnique = 1;
+    ELSE
+        BEGIN
+            SET @minimalDuplicates = @dupCountAllCols;
+            SET @isAllColsUnique = 0;
+            IF @debug = 1
+            BEGIN
+                RAISERROR(N' -> All columns (%s) are NOT unique, duplicates found: %d', 10, 1, @allCols, @dupCountAllCols) WITH NOWAIT;
+            END;
+        END;
+
+    
+    
+
     -- optional one-time sample
     DECLARE @useSampling bit = CASE WHEN @samplepercent BETWEEN 1 AND 99 THEN 1 ELSE 0 END;
     DECLARE @sampleMaterialized bit = 1;
@@ -338,15 +384,30 @@ BEGIN
                     INSERT @tv EXEC sp_executesql @sql;
                     SELECT @dupCount = dup_count FROM @tv;
 
-                    IF @dupCount = 0
+                    IF @dupCount = @minimalDuplicates
                     BEGIN
-                        SET @winner = @cols;
-                        IF @debug = 1
+                        IF @isAllColsUnique = 1
                         BEGIN
-                            DECLARE @dbgMsg11 nvarchar(100) = N' -> VALIDATED unique on full data.';
-                            RAISERROR('%s', 10, 1, @dbgMsg11) WITH NOWAIT;
+                            -- all columns are unique, so no need to continue testing
+                            SET @winner = @cols;
+                            IF @debug = 1
+                            BEGIN
+                                DECLARE @dbgMsgAllCols2 nvarchar(200) = N' -> VALIDATED unique on full data (all columns).';
+                                RAISERROR('%s', 10, 1, @dbgMsgAllCols2) WITH NOWAIT;
+                            END;
+                            BREAK;
                         END;
-                        BREAK;
+                        ELSE
+                        BEGIN                       
+                            SET @winner = null;
+                            SET @bestSoFar = @cols;
+                            IF @debug = 1
+                            BEGIN
+                                DECLARE @dbgMsg11 nvarchar(120) = N' -> EARLY STOPPED with best approx unique on full data (accepted) for ('+ @cols + ')';
+                                RAISERROR('%s', 10, 1, @dbgMsg11) WITH NOWAIT;
+                            END;
+                            BREAK;
+                        END
                     END
                     ELSE
                     BEGIN
@@ -376,7 +437,7 @@ BEGIN
                 SET @winner = @cols;
                 IF @debug = 1
                 BEGIN
-                    DECLARE @dbgMsg14 nvarchar(120) = N' -> UNIQUE on current scope (accepted) for ('+ @cols + ')';
+                    DECLARE @dbgMsg14 nvarchar(120) = N' -> UNIQUE found on current scope (sample = ' + CAST(@samplepercent AS nvarchar(2)) + N'%) for ('+ @cols + ')';
                     RAISERROR('%s', 10, 1, @dbgMsg14) WITH NOWAIT;
                 END;
                 BREAK;
