@@ -163,8 +163,8 @@ BEGIN
     SELECT @allCols = STRING_AGG(QUOTENAME(colname), N',') WITHIN GROUP (ORDER BY rn)
     FROM #candidates;
     DECLARE @sqlAllCols nvarchar(max) = N'
-        DECLARE @d BIGINT;
-        SELECT @d = COUNT_BIG(*) FROM (
+        DECLARE @d INT;
+        SELECT @d = COUNT(*) FROM (
             SELECT ' + @allCols + N'
             FROM ' + @fullName + N'
             GROUP BY ' + @allCols + N'
@@ -314,8 +314,8 @@ BEGIN
         SELECT @cols = cols_csv, @k = k FROM #tests WHERE test_id = @i;
 
         SET @sql = N'
-            DECLARE @d BIGINT;
-            SELECT @d = COUNT_BIG(*) FROM (
+            DECLARE @d INT;
+            SELECT @d = COUNT(*) FROM (
                 SELECT ' + @cols + N'
                 ' + @fromSample + N'
                 GROUP BY ' + @cols + N'
@@ -364,8 +364,8 @@ BEGIN
             IF @useSampling = 1 AND @validate = 1
             BEGIN
                 SET @sql = N'
-                    DECLARE @d BIGINT;
-                    SELECT @d = COUNT_BIG(*) FROM (
+                    DECLARE @d INT;
+                    SELECT @d = COUNT(*) FROM (
                         SELECT ' + @cols + N'
                         ' + @fromFull + N'
                         GROUP BY ' + @cols + N'
