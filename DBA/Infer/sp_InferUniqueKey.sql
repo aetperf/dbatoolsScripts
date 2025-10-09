@@ -190,7 +190,7 @@ BEGIN
             SET @isAllColsUnique = 0;
             IF @debug = 1
             BEGIN
-                DECLARE @dbgMsgAllCols3 nvarchar(200) = N'sp_inferUniqueKey: all eligibles columns ('+ @allCols + ') are NOT unique, duplicates found: ' + CAST(@dupCountAllCols AS nvarchar(20));
+                DECLARE @dbgMsgAllCols3 nvarchar(2000) = N'sp_inferUniqueKey: all eligibles columns ('+ @allCols + ') are NOT unique, duplicates found: ' + CAST(@dupCountAllCols AS nvarchar(20));
                 RAISERROR('%s', 10, 1, @dbgMsgAllCols3) WITH NOWAIT;
             END;
         END;    
@@ -323,7 +323,7 @@ BEGIN
 
         IF @debug = 1
         BEGIN
-            DECLARE @dbgMsg7 nvarchar(400) = N'Test ' + CAST(@i AS nvarchar(10)) + N'/' + CAST(@nTests AS nvarchar(10)) + N' (k=' + CAST(@k AS nvarchar(10)) + N') [sample=' + CAST(@samplepercent AS nvarchar(2)) + N'%]: with keys ' + ISNULL(@cols, N'') + N' ...';
+            DECLARE @dbgMsg7 nvarchar(3000) = N'Test ' + CAST(@i AS nvarchar(10)) + N'/' + CAST(@nTests AS nvarchar(10)) + N' (k=' + CAST(@k AS nvarchar(10)) + N') [sample=' + CAST(@samplepercent AS nvarchar(2)) + N'%]: with keys ' + ISNULL(@cols, N'') + N' ...';
             RAISERROR('%s', 10, 1, @dbgMsg7) WITH NOWAIT;            
         END;
 
@@ -335,14 +335,14 @@ BEGIN
             IF @debug = 1
             BEGIN
                 DECLARE @dupCountStr nvarchar(50) = CAST(@dupCount AS NVARCHAR(50));
-                DECLARE @dbgMsg8 nvarchar(200) = N' -> Number of duplicates found for ('+ @cols + ') = ' + @dupCountStr;
+                DECLARE @dbgMsg8 nvarchar(2000) = N' -> Number of duplicates found for ('+ @cols + ') = ' + @dupCountStr;
                 RAISERROR('%s', 10, 1, @dbgMsg8) WITH NOWAIT;
             END;
         END TRY
         BEGIN CATCH            
             DECLARE @errn2 int = ERROR_NUMBER();
             DECLARE @errm2 nvarchar(2048) = ERROR_MESSAGE();
-            DECLARE @dbgMsg9 nvarchar(64) = N' -> ERROR on test('+ @cols + ') : ';
+            DECLARE @dbgMsg9 nvarchar(1000) = N' -> ERROR on test('+ @cols + ') : ';
             RAISERROR('%s %d', 10, 1, @dbgMsg9, @i) WITH NOWAIT;
             RAISERROR('%d %s', 10, 1, @errn2, @errm2) WITH NOWAIT;            
             SET @i = @i + 1;
@@ -373,7 +373,7 @@ BEGIN
 
                 IF @debug = 1
                 BEGIN
-                    DECLARE @dbgMsg10 nvarchar(100) = N' -> validating on full data for ('+ @cols + ') ...';
+                    DECLARE @dbgMsg10 nvarchar(2000) = N' -> validating on full data for ('+ @cols + ') ...';
                     RAISERROR('%s', 10, 1, @dbgMsg10) WITH NOWAIT;
                     SELECT [validation_sql]=@sql;
                 END;
@@ -402,7 +402,7 @@ BEGIN
                             SET @bestSoFar = @cols;
                             IF @debug = 1
                             BEGIN
-                                DECLARE @dbgMsg11 nvarchar(120) = N' -> EARLY STOPPED with best approx unique on full data (accepted) for ('+ @cols + ')';
+                                DECLARE @dbgMsg11 nvarchar(1200) = N' -> EARLY STOPPED with best approx unique on full data (accepted) for ('+ @cols + ')';
                                 RAISERROR('%s', 10, 1, @dbgMsg11) WITH NOWAIT;
                             END;
                             BREAK;
@@ -418,7 +418,7 @@ BEGIN
                         END;
                         IF @debug = 1
                         BEGIN
-                            DECLARE @dbgMsg12 nvarchar(120) = N' -> validation of ('+ @cols + ') failed (duplicates on full). Continue.';
+                            DECLARE @dbgMsg12 nvarchar(1200) = N' -> validation of ('+ @cols + ') failed (duplicates on full). Continue.';
                             RAISERROR('%s', 10, 1, @dbgMsg12) WITH NOWAIT;
                         END;
                     END
@@ -436,7 +436,7 @@ BEGIN
                 SET @winner = @cols;
                 IF @debug = 1
                 BEGIN
-                    DECLARE @dbgMsg14 nvarchar(120) = N' -> UNIQUE found on current scope (sample = ' + CAST(@samplepercent AS nvarchar(2)) + N'%) for ('+ @cols + ')';
+                    DECLARE @dbgMsg14 nvarchar(1200) = N' -> UNIQUE found on current scope (sample = ' + CAST(@samplepercent AS nvarchar(2)) + N'%) for ('+ @cols + ')';
                     RAISERROR('%s', 10, 1, @dbgMsg14) WITH NOWAIT;
                 END;
                 BREAK;
