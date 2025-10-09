@@ -49,7 +49,7 @@ CREATE OR ALTER PROCEDURE dbo.sp_inferUniqueKey
       @tablename = N'lineitem',
       @eligiblecolumnslist = N'%key,%number',
       @excludedcolumnslist = NULL,
-      @maxkeycolumns = 5
+      @maxkeycolumns = 5,
       @maxtests = 100,
       @samplepercent = 10,
       @validate = 1,
