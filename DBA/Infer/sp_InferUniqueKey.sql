@@ -175,7 +175,8 @@ BEGIN
         DECLARE @mkSample nvarchar(max) =
             N'SELECT ' + @colsAll + N'
               INTO ' + @globalSampleTableName + N'
-              FROM ' + @fullName + N' TABLESAMPLE SYSTEM (' + CAST(@samplepercent AS nvarchar(10)) + N' PERCENT);';
+              FROM ' + @fullName + N' TABLESAMPLE SYSTEM (' + CAST(@samplepercent AS nvarchar(10)) + N' PERCENT);
+              CREATE CLUSTERED COLUMNSTORE INDEX i0 ON ' + @globalSampleTableName + N';';
 
         BEGIN TRY
             IF @debug = 1
@@ -192,7 +193,7 @@ BEGIN
                 DECLARE @rc bigint = 0;
                 EXEC sp_executesql @dysqlCheck, N'@rc bigint OUTPUT', @rc=@rc OUTPUT;                             
                 RAISERROR(N' -> #sample ready (rows): %d', 10, 1,@rc) WITH NOWAIT;
-                
+                RETURN 2;
             END;
         END TRY
         BEGIN CATCH            
