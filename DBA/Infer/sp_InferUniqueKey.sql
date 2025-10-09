@@ -405,7 +405,7 @@ BEGIN
         EXEC (@dropGlobalSampleTableSQL);
     END;
 
-    DECLARTE @EndTime datetime2 = SYSUTCDATETIME();
+    DECLARE @EndTime datetime2 = SYSUTCDATETIME();
     DECLARE @durationSeconds int = DATEDIFF(SECOND, @StartTime, @EndTime);
 
     IF @storeResults = 1
