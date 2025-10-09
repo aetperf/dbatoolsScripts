@@ -190,7 +190,8 @@ BEGIN
             SET @isAllColsUnique = 0;
             IF @debug = 1
             BEGIN
-                RAISERROR(N' -> All columns (%s) are NOT unique, duplicates found: %d', 10, 1, @allCols, @dupCountAllCols) WITH NOWAIT;
+                DECLARE @dbgMsgAllCols3 nvarchar(200) = N'sp_inferUniqueKey: all eligibles columns ('+ @allCols + ') are NOT unique, duplicates found: ' + CAST(@dupCountAllCols AS nvarchar(20));
+                RAISERROR('%s', 10, 1, @dbgMsgAllCols3) WITH NOWAIT;
             END;
         END;
 
