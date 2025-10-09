@@ -192,8 +192,7 @@ BEGIN
                 DECLARE @dysqlCheck nvarchar(max) = N'SELECT COUNT(*) FROM ' + @globalSampleTableName + N';';
                 DECLARE @rc bigint = 0;
                 EXEC sp_executesql @dysqlCheck, N'@rc bigint OUTPUT', @rc=@rc OUTPUT;                             
-                RAISERROR(N' -> #sample ready (rows): %d', 10, 1,@rc) WITH NOWAIT;
-                RETURN 2;
+                RAISERROR(N' -> #sample ready (rows): %d', 10, 1,@rc) WITH NOWAIT;                
             END;
         END TRY
         BEGIN CATCH            
@@ -201,7 +200,8 @@ BEGIN
             DECLARE @errm nvarchar(2048) = ERROR_MESSAGE();
             DECLARE @dbgMsg5 nvarchar(200) = N' -> Could not materialize'+ @globalSampleTableName;
             RAISERROR('%s', 10, 1, @dbgMsg5) WITH NOWAIT;
-            RAISERROR('   error %d: %s', 10, 1, @errn, @errm) WITH NOWAIT;            
+            RAISERROR('   error %d: %s', 10, 1, @errn, @errm) WITH NOWAIT;   
+            RETURN 2;         
         END CATCH
     END
 
