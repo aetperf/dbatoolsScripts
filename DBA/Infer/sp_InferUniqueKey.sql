@@ -9,8 +9,10 @@ CREATE OR ALTER PROCEDURE dbo.sp_inferUniqueKey
     @maxtests            int = 128,             -- max number of tests to run
     @samplepercent       int = 0,               -- 0=off; else 1..99 approximate page sample
     @validate            bit = 1,               -- if sampling is used, recheck on full data
+    @storeResults        bit = 1,               -- if 1, store results in dbo.InferedUniqueKey table
     @debug               bit = 0                -- debug streaming & SQL printing
 )
+
 /*==============================================================================
   Infer a unique key (column combination) for a given table by testing combinations
   of columns. The procedure returns the first unique combination it finds, or null if not found
@@ -23,8 +25,8 @@ CREATE OR ALTER PROCEDURE dbo.sp_inferUniqueKey
     @dbname              sysname          : database name of the target table
     @schemaname          sysname          : schema name of the target table
     @tablename           sysname          : table name of the target table
-    @eligiblecolumnslist nvarchar(max)   : optional CSV of LIKE patterns for column names to include (OR'ed)
-    @excludedcolumnslist nvarchar(max)   : optional CSV of LIKE patterns for column names to exclude (AND'ed)
+    @eligiblecolumnslist nvarchar(max)    : optional CSV of LIKE patterns for column names to include (OR'ed)
+    @excludedcolumnslist nvarchar(max)    : optional CSV of LIKE patterns for column names to exclude (AND'ed)
     @maxkeycolumns       int              : max number of columns in the inferred key (default 8)
     @maxtests            int              : max number of combinations to test (default 128)
     @samplepercent       int              : if between 1 and 99, use TABLESAMPLE SYSTEM (n PERCENT) to speed up (default 0=off)
@@ -36,9 +38,9 @@ CREATE OR ALTER PROCEDURE dbo.sp_inferUniqueKey
       dbname              sysname        : as input
       schemaname          sysname        : as input
       tablename           sysname        : as input
-      eligiblecolumnslist nvarchar(max) : as input (or empty string)
-      excludedcolumnslist nvarchar(max) : as input (or empty string)
-      uk_found           nvarchar(max)  : CSV of column names in the found unique key, or empty string if not found
+      eligiblecolumnslist nvarchar(max)  : as input (or empty string)
+      excludedcolumnslist nvarchar(max)  : as input (or empty string)
+      uk_found           nvarchar(max)   : CSV of column names in the found unique key, or empty string if not found
   
   Example:
       EXEC dbo.sp_inferUniqueKey
@@ -374,6 +376,28 @@ BEGIN
         DECLARE @winnerSafe nvarchar(max) = ISNULL(@winner, N'');
         DECLARE @dbgMsg15 nvarchar(200) = N'sp_inferUK: result uk_found = ' + @winnerSafe;
         RAISERROR('%s', 10, 1, @dbgMsg15) WITH NOWAIT;
+    END;
+
+    -- clean up global temp table if any
+    IF @useSampling = 1 AND @sampleMaterialized = 1
+    BEGIN
+        IF @debug = 1
+        BEGIN
+            DECLARE @dbgMsg16 nvarchar(200) = N'sp_inferUK: dropping '+ @globalSampleTableName + N' ...';
+            RAISERROR('%s', 10, 1, @dbgMsg16) WITH NOWAIT;
+        END;
+        EXEC (@dropGlobalSampleTableSQL);
+    END;
+
+    IF @storeResults = 1
+    BEGIN
+        INSERT INTO dbo.InferedUniqueKey
+        (dbname, schemaname, tablename, eligiblecolumnslist, excludedcolumnslist, uk_found)
+        VALUES
+        (@dbname, @schemaname, @tablename,
+         ISNULL(@eligiblecolumnslist, N''),
+         ISNULL(@excludedcolumnslist, N''),
+         ISNULL(@winner, N''));
     END;
 
     SELECT
