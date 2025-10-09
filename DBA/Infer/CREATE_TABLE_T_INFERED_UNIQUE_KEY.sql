@@ -11,5 +11,6 @@ CREATE TABLE dbo.InferedUniqueKey
     eligiblecolumnslist nvarchar(max) NULL,
     excludedcolumnslist nvarchar(max) NULL,
     uk_found      nvarchar(max) NULL,
+    best_unique_approximation nvarchar(max) NULL,
     CONSTRAINT PK_InferedUniqueKey PRIMARY KEY (controldate,dbname, schemaname, tablename)
 );
