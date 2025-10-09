@@ -11,49 +11,49 @@ CREATE OR ALTER PROCEDURE dbo.sp_inferUniqueKey
     @validate            bit = 1,               -- if sampling is used, recheck on full data
     @debug               bit = 0                -- debug streaming & SQL printing
 )
----------------------------------------------------------------------------------
--- Infer a unique key (column combination) for a given table by testing combinations
--- of columns. The procedure returns the first unique combination it finds, or null if not found
--- within the given limits.
--- The procedure can optionally use a page sample of the table to speed up the search,
--- at the risk of false positives. If sampling is used, the found key can optionally be
--- validated on the full data.
---
--- Parameters:
---   @dbname              sysname          : database name of the target table
---   @schemaname          sysname          : schema name of the target table
---   @tablename           sysname          : table name of the target table
---   @eligiblecolumnslist nvarchar(max)   : optional CSV of LIKE patterns for column names to include (OR'ed)
---   @excludedcolumnslist nvarchar(max)   : optional CSV of LIKE patterns for column names to exclude (AND'ed)
---   @maxkeycolumns       int              : max number of columns in the inferred key (default 8)
---   @maxtests            int              : max number of combinations to test (default 128)
---   @samplepercent       int              : if between 1 and 99, use TABLESAMPLE SYSTEM (n PERCENT) to speed up (default 0=off)
---   @validate            bit              : if sampling is used, recheck the found key on full data (default 1=yes)
---   @debug               bit              : if 1, print debug messages and some SQL (default 0=off)
+/*==============================================================================
+  Infer a unique key (column combination) for a given table by testing combinations
+  of columns. The procedure returns the first unique combination it finds, or null if not found
+  within the given limits.
+  The procedure can optionally use a page sample of the table to speed up the search,
+  at the risk of false positives. If sampling is used, the found key can optionally be
+  validated on the full data.
+  
+  Parameters:
+    @dbname              sysname          : database name of the target table
+    @schemaname          sysname          : schema name of the target table
+    @tablename           sysname          : table name of the target table
+    @eligiblecolumnslist nvarchar(max)   : optional CSV of LIKE patterns for column names to include (OR'ed)
+    @excludedcolumnslist nvarchar(max)   : optional CSV of LIKE patterns for column names to exclude (AND'ed)
+    @maxkeycolumns       int              : max number of columns in the inferred key (default 8)
+    @maxtests            int              : max number of combinations to test (default 128)
+    @samplepercent       int              : if between 1 and 99, use TABLESAMPLE SYSTEM (n PERCENT) to speed up (default 0=off)
+    @validate            bit              : if sampling is used, recheck the found key on full data (default 1=yes)
+    @debug               bit              : if 1, print debug messages and some SQL (default 0=off)
+  
+  Returns:
+    A single row with the following columns:
+      dbname              sysname        : as input
+      schemaname          sysname        : as input
+      tablename           sysname        : as input
+      eligiblecolumnslist nvarchar(max) : as input (or empty string)
+      excludedcolumnslist nvarchar(max) : as input (or empty string)
+      uk_found           nvarchar(max)  : CSV of column names in the found unique key, or empty string if not found
+  
+  Example:
+      EXEC dbo.sp_inferUniqueKey
+      @dbname = N'tpch_test',
+      @schemaname = N'dbo',
+      @tablename = N'lineitem',
+      @eligiblecolumnslist = N'%key,%number',
+      @excludedcolumnslist = NULL,
+      @maxkeycolumns = 5
+      @maxtests = 100,
+      @samplepercent = 10,
+      @validate = 1,
+      @debug = 1;
 
--- Returns:
---   A single row with the following columns:
---     dbname              sysname        : as input
---     schemaname          sysname        : as input
---     tablename           sysname        : as input
---     eligiblecolumnslist nvarchar(max) : as input (or empty string)
---     excludedcolumnslist nvarchar(max) : as input (or empty string)
---     uk_found           nvarchar(max)  : CSV of column names in the found unique key, or empty string if not found
-
--- Example:
---     EXEC dbo.sp_inferUniqueKey
---     @dbname = N'tpch_test',
---     @schemaname = N'dbo',
---     @tablename = N'lineitem',
---     @eligiblecolumnslist = N'%key,%number',
---     @excludedcolumnslist = NULL,
---     @maxkeycolumns = 5
---     @maxtests = 100,
---     @samplepercent = 10,
---     @validate = 1,
---     @debug = 1;
-
----------------------------------------------------------------------------------
+================================================================================*/
 
 
 AS
