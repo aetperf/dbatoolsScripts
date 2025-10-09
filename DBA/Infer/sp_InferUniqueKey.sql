@@ -133,7 +133,7 @@ BEGIN
     BEGIN
         IF @debug = 1
         BEGIN
-            DECLARE @dbgMsg1 nvarchar(400) = N'sp_inferUK: no candidates after filters.';
+            DECLARE @dbgMsg1 nvarchar(400) = N'sp_inferUniqueKey: no candidates after filters.';
             RAISERROR('%s', 10, 1, @dbgMsg1) WITH NOWAIT;
         END;
         SELECT
@@ -146,7 +146,7 @@ BEGIN
 
     IF @debug = 1
     BEGIN
-        DECLARE @dbgMsg2 nvarchar(400) = N'sp_inferUK: candidates (cap to @maxkeycolumns).';
+        DECLARE @dbgMsg2 nvarchar(400) = N'sp_inferUniqueKey: candidates (cap to @maxkeycolumns).';
         RAISERROR('%s', 10, 1, @dbgMsg2) WITH NOWAIT;
         SELECT rn, colname, column_id FROM #candidates ORDER BY rn;
     END;
@@ -180,7 +180,7 @@ BEGIN
         BEGIN TRY
             IF @debug = 1
             BEGIN
-                DECLARE @dbgMsg3 nvarchar(200) = N'sp_inferUK: creating '+ @globalSampleTableName + N' ...';
+                DECLARE @dbgMsg3 nvarchar(200) = N'sp_inferUniqueKey: creating '+ @globalSampleTableName + N' ...';
                 RAISERROR('%s', 10, 1, @dbgMsg3) WITH NOWAIT;
                 SELECT [sample_build_sql] = @mkSample;
             END;
@@ -231,7 +231,7 @@ BEGIN
     DECLARE @nTests int = (SELECT COUNT(*) FROM #tests);
     IF @debug = 1
     BEGIN
-        DECLARE @dbgMsg6 nvarchar(200) = N'sp_inferUK: test combinations generated.';
+        DECLARE @dbgMsg6 nvarchar(200) = N'sp_inferUniqueKey: test combinations generated.';
         RAISERROR('%s', 10, 1, @dbgMsg6) WITH NOWAIT;
         SELECT test_id, k, cols_csv FROM #tests ORDER BY test_id;
     END;
@@ -251,8 +251,12 @@ BEGIN
         @cols         nvarchar(max),
         @k            int,
         @dupCount     bigint,
+        @lastbestDupCount bigint = 2147483647,  -- max int
+        @lastbestDupCountSample bigint = 2147483647,
         @sql          nvarchar(max),
         @winner       nvarchar(max) = N'',
+        @bestSoFar    nvarchar(max) = N'',
+        @bestSoFarSample    nvarchar(max) = N'',
         @dbgSampleSrc nvarchar(32);
 
 
@@ -284,23 +288,28 @@ BEGIN
 
             IF @debug = 1
             BEGIN
-                DECLARE @dupCountStr nvarchar(50) = CONVERT(nvarchar(50), @dupCount);
-                DECLARE @dbgMsg8 nvarchar(200) = N' -> duplicates = ' + @dupCountStr;
+                DECLARE @dupCountStr nvarchar(50) = CAST(@dupCount AS NVARCHAR(50));
+                DECLARE @dbgMsg8 nvarchar(200) = N' -> Number of duplicates found for ('+ @cols + ') = ' + @dupCountStr;
                 RAISERROR('%s', 10, 1, @dbgMsg8) WITH NOWAIT;
             END;
         END TRY
-        BEGIN CATCH
-            IF @debug = 1
-            BEGIN
-                DECLARE @errn2 int = ERROR_NUMBER();
-                DECLARE @errm2 nvarchar(2048) = ERROR_MESSAGE();
-                DECLARE @dbgMsg9 nvarchar(64) = N' -> ERROR on test';
-                RAISERROR('%s %d', 10, 1, @dbgMsg9, @i) WITH NOWAIT;
-                RAISERROR('    %d %s', 10, 1, @errn2, @errm2) WITH NOWAIT;
-            END;
+        BEGIN CATCH            
+            DECLARE @errn2 int = ERROR_NUMBER();
+            DECLARE @errm2 nvarchar(2048) = ERROR_MESSAGE();
+            DECLARE @dbgMsg9 nvarchar(64) = N' -> ERROR on test('+ @cols + ') : ';
+            RAISERROR('%s %d', 10, 1, @dbgMsg9, @i) WITH NOWAIT;
+            RAISERROR('%d %s', 10, 1, @errn2, @errm2) WITH NOWAIT;            
             SET @i = @i + 1;
             CONTINUE;
         END CATCH
+
+        -- keep best (of sample) so far
+        IF @dupCount < @lastbestDupCountSample
+        BEGIN
+            SET @lastbestDupCountSample = @dupCount;
+            SET @bestSoFarSample = @cols;
+        END;
+
 
         IF @dupCount = 0
         BEGIN
@@ -318,7 +327,7 @@ BEGIN
 
                 IF @debug = 1
                 BEGIN
-                    DECLARE @dbgMsg10 nvarchar(100) = N' -> validating on full data ...';
+                    DECLARE @dbgMsg10 nvarchar(100) = N' -> validating on full data for ('+ @cols + ') ...';
                     RAISERROR('%s', 10, 1, @dbgMsg10) WITH NOWAIT;
                     SELECT [validation_sql]=@sql;
                 END;
@@ -340,22 +349,25 @@ BEGIN
                     END
                     ELSE
                     BEGIN
+                        -- store best so far on full data
+                        IF @dupCount < @lastbestDupCount
+                        BEGIN
+                            SET @lastbestDupCount = @dupCount;
+                            SET @bestSoFar = @cols;
+                        END;
                         IF @debug = 1
                         BEGIN
-                            DECLARE @dbgMsg12 nvarchar(120) = N' -> validation failed (duplicates on full). Continue.';
+                            DECLARE @dbgMsg12 nvarchar(120) = N' -> validation of ('+ @cols + ') failed (duplicates on full). Continue.';
                             RAISERROR('%s', 10, 1, @dbgMsg12) WITH NOWAIT;
                         END;
                     END
                 END TRY
-                BEGIN CATCH
-                    IF @debug = 1
-                    BEGIN
+                BEGIN CATCH                    
                         DECLARE @errn3 int = ERROR_NUMBER();
                         DECLARE @errm3 nvarchar(2048) = ERROR_MESSAGE();
                         DECLARE @dbgMsg13 nvarchar(64) = N' -> ERROR during validation:';
                         RAISERROR('%s', 10, 1, @dbgMsg13) WITH NOWAIT;
                         RAISERROR('    %d %s', 10, 1, @errn3, @errm3) WITH NOWAIT;
-                    END;
                 END CATCH
             END
             ELSE
@@ -363,12 +375,14 @@ BEGIN
                 SET @winner = @cols;
                 IF @debug = 1
                 BEGIN
-                    DECLARE @dbgMsg14 nvarchar(120) = N' -> UNIQUE on current scope (accepted).';
+                    DECLARE @dbgMsg14 nvarchar(120) = N' -> UNIQUE on current scope (accepted) for ('+ @cols + ')';
                     RAISERROR('%s', 10, 1, @dbgMsg14) WITH NOWAIT;
                 END;
                 BREAK;
             END
         END
+
+
 
         SET @i = @i + 1;
     END
@@ -376,7 +390,7 @@ BEGIN
     IF @debug = 1
     BEGIN
         DECLARE @winnerSafe nvarchar(max) = ISNULL(@winner, N'');
-        DECLARE @dbgMsg15 nvarchar(200) = N'sp_inferUK: result uk_found = ' + @winnerSafe;
+        DECLARE @dbgMsg15 nvarchar(200) = N'sp_inferUniqueKey: result uk_found = ' + @winnerSafe;
         RAISERROR('%s', 10, 1, @dbgMsg15) WITH NOWAIT;
     END;
 
@@ -385,7 +399,7 @@ BEGIN
     BEGIN
         IF @debug = 1
         BEGIN
-            DECLARE @dbgMsg16 nvarchar(200) = N'sp_inferUK: dropping '+ @globalSampleTableName + N' ...';
+            DECLARE @dbgMsg16 nvarchar(200) = N'sp_inferUniqueKey: dropping '+ @globalSampleTableName + N' ...';
             RAISERROR('%s', 10, 1, @dbgMsg16) WITH NOWAIT;
         END;
         EXEC (@dropGlobalSampleTableSQL);
@@ -394,12 +408,17 @@ BEGIN
     IF @storeResults = 1
     BEGIN
         INSERT INTO dbo.InferedUniqueKey
-        (dbname, schemaname, tablename, eligiblecolumnslist, excludedcolumnslist, uk_found)
+        (dbname, schemaname, tablename, eligiblecolumnslist, excludedcolumnslist, uk_found, best_unique_approximation)
         VALUES
         (@dbname, @schemaname, @tablename,
          ISNULL(@eligiblecolumnslist, N''),
          ISNULL(@excludedcolumnslist, N''),
-         ISNULL(@winner, N''));
+         @winner,
+         CASE WHEN @winner IS NOT NULL AND @winner <> N'' THEN NULL
+              WHEN ISNULL(@bestSoFar,N'') <> N'' THEN @bestSoFar
+              WHEN ISNULL(@bestSoFarSample,N'') <> N'' THEN @bestSoFarSample              
+              ELSE NULL
+         END);
     END;
 
     SELECT
@@ -408,6 +427,11 @@ BEGIN
         @tablename AS tablename,
         ISNULL(@eligiblecolumnslist, N'') AS eligiblecolumnslist,
         ISNULL(@excludedcolumnslist, N'') AS excludedcolumnslist,
-        ISNULL(@winner, N'') AS uk_found;
+        @winner AS uk_found,
+        CASE WHEN @winner IS NOT NULL AND @winner <> N'' THEN NULL
+              WHEN ISNULL(@bestSoFar,N'') <> N'' THEN @bestSoFar
+              WHEN ISNULL(@bestSoFarSample,N'') <> N'' THEN @bestSoFarSample              
+              ELSE NULL
+         END AS best_unique_approximation;
 END
 GO
