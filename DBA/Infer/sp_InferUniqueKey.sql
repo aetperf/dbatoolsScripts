@@ -62,6 +62,8 @@ AS
 BEGIN
     SET NOCOUNT ON;
 
+    DECLARE @StartTime datetime2 = SYSUTCDATETIME();
+
     IF @dbname IS NULL OR @schemaname IS NULL OR @tablename IS NULL
     BEGIN
         RAISERROR('All of @dbname, @schemaname, @tablename are required.', 16, 1);
@@ -271,7 +273,7 @@ BEGIN
 
         IF @debug = 1
         BEGIN
-            DECLARE @dbgMsg7 nvarchar(400) = N'Test ' + CAST(@i AS nvarchar(10)) + N'/' + CAST(@nTests AS nvarchar(10)) + N' (k=' + CAST(@k AS nvarchar(10)) + N') [sample=' + CAST(@samplepercent AS nvarchar(2)) + N'%]:';
+            DECLARE @dbgMsg7 nvarchar(400) = N'Test ' + CAST(@i AS nvarchar(10)) + N'/' + CAST(@nTests AS nvarchar(10)) + N' (k=' + CAST(@k AS nvarchar(10)) + N') [sample=' + CAST(@samplepercent AS nvarchar(2)) + N'%]: with keys ' + ISNULL(@cols, N'') + N' ...';
             RAISERROR('%s', 10, 1, @dbgMsg7) WITH NOWAIT;            
         END;
 
