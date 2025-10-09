@@ -164,7 +164,7 @@ BEGIN
     FROM #candidates;
     DECLARE @sqlAllCols nvarchar(max) = N'
         DECLARE @d BIGINT;
-        SELECT @d = COUNT(*) FROM (
+        SELECT @d = COUNT_BIG(*) FROM (
             SELECT ' + @allCols + N'
             FROM ' + @fullName + N'
             GROUP BY ' + @allCols + N'
@@ -314,7 +314,7 @@ BEGIN
 
         SET @sql = N'
             DECLARE @d BIGINT;
-            SELECT @d = COUNT(*) FROM (
+            SELECT @d = COUNT_BIG(*) FROM (
                 SELECT ' + @cols + N'
                 ' + @fromSample + N'
                 GROUP BY ' + @cols + N'
@@ -364,7 +364,7 @@ BEGIN
             BEGIN
                 SET @sql = N'
                     DECLARE @d BIGINT;
-                    SELECT @d = COUNT(*) FROM (
+                    SELECT @d = COUNT_BIG(*) FROM (
                         SELECT ' + @cols + N'
                         ' + @fromFull + N'
                         GROUP BY ' + @cols + N'
