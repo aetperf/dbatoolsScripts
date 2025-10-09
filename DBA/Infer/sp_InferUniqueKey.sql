@@ -193,9 +193,7 @@ BEGIN
                 DECLARE @dbgMsgAllCols3 nvarchar(200) = N'sp_inferUniqueKey: all eligibles columns ('+ @allCols + ') are NOT unique, duplicates found: ' + CAST(@dupCountAllCols AS nvarchar(20));
                 RAISERROR('%s', 10, 1, @dbgMsgAllCols3) WITH NOWAIT;
             END;
-        END;
-
-    
+        END;    
     
 
     -- optional one-time sample
@@ -474,17 +472,19 @@ BEGIN
     IF @storeResults = 1
     BEGIN
         INSERT INTO dbo.InferedUniqueKey
-        (dbname, schemaname, tablename, eligiblecolumnslist, excludedcolumnslist, uk_found, best_unique_approximation, testdurationseconds)
+        (dbname, schemaname, tablename, eligiblecolumnslist, excludedcolumnslist, allcolumnslist, uk_found, best_unique_approximation, duplicatesfound,testdurationseconds)
         VALUES
         (@dbname, @schemaname, @tablename,
          ISNULL(@eligiblecolumnslist, N''),
          ISNULL(@excludedcolumnslist, N''),
+         ISNULL(@allCols, N''),
          @winner,
          CASE WHEN @winner IS NOT NULL AND @winner <> N'' THEN NULL
               WHEN ISNULL(@bestSoFar,N'') <> N'' THEN @bestSoFar
               WHEN ISNULL(@bestSoFarSample,N'') <> N'' THEN @bestSoFarSample              
               ELSE NULL
          END,
+         @minimalDuplicates,
          @durationSeconds);
     END;
 
@@ -494,12 +494,14 @@ BEGIN
         @tablename AS tablename,
         ISNULL(@eligiblecolumnslist, N'') AS eligiblecolumnslist,
         ISNULL(@excludedcolumnslist, N'') AS excludedcolumnslist,
+        ISNULL(@allCols, N'') AS allcolumnslist,
         @winner AS uk_found,
         CASE WHEN @winner IS NOT NULL AND @winner <> N'' THEN NULL
               WHEN ISNULL(@bestSoFar,N'') <> N'' THEN @bestSoFar
               WHEN ISNULL(@bestSoFarSample,N'') <> N'' THEN @bestSoFarSample              
               ELSE NULL
          END AS best_unique_approximation,
+        @minimalDuplicates AS duplicatesfound,
          @durationSeconds AS testdurationseconds;
 END
 GO

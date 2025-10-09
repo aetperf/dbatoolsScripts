@@ -10,8 +10,10 @@ CREATE TABLE dbo.InferedUniqueKey
     tablename     sysname       NOT NULL,
     eligiblecolumnslist nvarchar(max) NULL,
     excludedcolumnslist nvarchar(max) NULL,
+    allcolumnslist nvarchar(max) NULL,
     uk_found      nvarchar(max) NULL,
     best_unique_approximation nvarchar(max) NULL,
+    duplicatesfound int          NOT NULL DEFAULT 0,
     testdurationseconds int          NOT NULL DEFAULT 0,
     CONSTRAINT PK_InferedUniqueKey PRIMARY KEY (controldate,dbname, schemaname, tablename)
 );
