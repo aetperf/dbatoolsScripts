@@ -405,10 +405,13 @@ BEGIN
         EXEC (@dropGlobalSampleTableSQL);
     END;
 
+    DECLARTE @EndTime datetime2 = SYSUTCDATETIME();
+    DECLARE @durationSeconds int = DATEDIFF(SECOND, @StartTime, @EndTime);
+
     IF @storeResults = 1
     BEGIN
         INSERT INTO dbo.InferedUniqueKey
-        (dbname, schemaname, tablename, eligiblecolumnslist, excludedcolumnslist, uk_found, best_unique_approximation)
+        (dbname, schemaname, tablename, eligiblecolumnslist, excludedcolumnslist, uk_found, best_unique_approximation, testdurationseconds)
         VALUES
         (@dbname, @schemaname, @tablename,
          ISNULL(@eligiblecolumnslist, N''),
@@ -418,7 +421,8 @@ BEGIN
               WHEN ISNULL(@bestSoFar,N'') <> N'' THEN @bestSoFar
               WHEN ISNULL(@bestSoFarSample,N'') <> N'' THEN @bestSoFarSample              
               ELSE NULL
-         END);
+         END,
+         @durationSeconds);
     END;
 
     SELECT
@@ -432,6 +436,7 @@ BEGIN
               WHEN ISNULL(@bestSoFar,N'') <> N'' THEN @bestSoFar
               WHEN ISNULL(@bestSoFarSample,N'') <> N'' THEN @bestSoFarSample              
               ELSE NULL
-         END AS best_unique_approximation;
+         END AS best_unique_approximation,
+         @durationSeconds AS testdurationseconds;
 END
 GO
