@@ -18,8 +18,8 @@ SELECT
         ELSE -1
     END AS CheckStatus,
     CASE
-        WHEN e.DatabaseName IS NULL THEN 'Extra (present in audit but not expected)'
-        WHEN c.DatabaseName IS NULL THEN 'Missing (expected but absent in database)'
+        WHEN e.DatabaseName IS NULL THEN 'REVOKE'
+        WHEN c.DatabaseName IS NULL THEN 'GRANT'
         ELSE 'OK'
     END AS CheckStatusDescription,
     CASE
