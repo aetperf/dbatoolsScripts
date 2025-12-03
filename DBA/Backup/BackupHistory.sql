@@ -22,7 +22,7 @@ SELECT
    msdb.dbo.backupmediafamily.physical_device_name,   
    left(physical_device_name,len(physical_device_name)-charindex('\',reverse(physical_device_name),1)+1) dir,
    msdb.dbo.backupset.name AS backupset_name, 
-   msdb.dbo.backupset.description 
+   msdb.dbo.backupset.description ,"user_name"
 FROM   msdb.dbo.backupmediafamily  
    INNER JOIN msdb.dbo.backupset ON msdb.dbo.backupmediafamily.media_set_id = msdb.dbo.backupset.media_set_id 
 WHERE  (CONVERT(datetime, msdb.dbo.backupset.backup_start_date, 102) >= GETDATE() - 600)  
