@@ -93,15 +93,6 @@ try {
         }
     } 
 
-     # validate paths
-    if (-not (Test-Path -Path $BackupRoot)) {
-        Write-Log "Backup root not found at ${BackupRoot}"
-        throw "Backup root not found at ${BackupRoot}"
-    }
-    if (-not (Test-Path -Path (Split-Path -Path $LogFile -Parent))) {
-        New-Item -ItemType Directory -Path (Split-Path -Path $LogFile -Parent) -Force | Out-Null
-    }
-
     # Try to connect to the target SQL instance
     Write-Log "Connecting to instance ${ServerName}..."
     $instance = Connect-DbaInstance -SqlInstance $ServerName -ErrorAction Stop
@@ -110,17 +101,42 @@ try {
     # Check if Restore step is to be performed
     if ($stepsToPerform -contains "Restore") 
     {
-        # Validate $Database backup parts (in BackupRoot, filtered)
-        Write-Log "Searching backup parts in '$BackupRoot' with filter '$BackupFilter'..."
-        $backupFiles = Get-ChildItem -Path $BackupRoot -Filter $BackupFilter -File |
-                    Where-Object { $_.Name -like "*$databaseName*"} |
-                    Sort-Object Name
-        if (-not $backupFiles) {
-            Write-Log "No backup files found in ${BackupRoot} for ${databaseName} with filter ${BackupFilter}"
-            throw "No backup files found in ${BackupRoot} for ${databaseName} with filter '*${databaseName}${BackupFilter}'"
+
+        ${suffixdatetime} = Get-Date -Format "yyyyMMdd_HHmmss"
+
+        # Validate $Database backup parts (in BackupRoot) using a VerifyOnly and check for warnings
+        Write-Log "Validating backup files for database ${DatabaseName} in ${BackupRoot}..."
+        Restore-DbaDatabase `
+                -SqlInstance $ServerName `
+                -Path $BackupRoot `
+                -DatabaseName ${DatabaseName}_Restore `
+                -DestinationFileSuffix "_${suffixdatetime}" `
+                -WithReplace `
+                -EnableException `
+                -ReplaceDbNameInFile `
+                -ErrorAction Stop `
+                -VerifyOnly `
+                -ErrorVariable errors `
+
+        $errorsCount = $errors.Count
+        if ($errorsCount -gt 0) {   
+            Write-Log "Backup validation failed with error(s):"
+            
+           $errors | ForEach-Object {
+                Write-Log "  $_"
+            }
+            
+                       
+            throw "Backup validation failed with error(s). See log for details."
+        }
+        else {
+            Write-Log "Backup validation succeeded with no errors."
         }
 
-        Write-Log ("Backup Files Found:" + ($backupFiles | ForEach-Object { [Environment]::NewLine + " - $($_.FullName)" }))
+        # Check if there are any warnings in the verification results
+        
+        Write-Log "Backup validation completed."
+
 
        
         Write-Log "Restore step selected."
@@ -130,14 +146,27 @@ try {
             Write-Log "Starting restore ${DatabaseName} into ${DatabaseName}_Restore..."
             Restore-DbaDatabase `
                 -SqlInstance $ServerName `
-                -Path $backupFiles.FullName `
+                -Path $BackupRoot `
                 -DatabaseName ${DatabaseName}_Restore `
                 -DestinationFileSuffix "_${suffixdatetime}" `
                 -WithReplace `
                 -EnableException `
                 -ReplaceDbNameInFile `
-                -ErrorAction Stop           
-            Write-Log "Restore completed."
+                -ErrorAction Stop `
+                -ErrorVariable errors
+                
+            if( $errors.Count -gt 0 ) {
+                Write-Log "Restore encountered error(s):"
+                $errors | ForEach-Object {
+                    Write-Log "  $_"
+                }
+                throw "Restore encountered error(s). See log for details."
+            }
+            else {
+                Write-Log "Restore completed."
+            }            
+                
+            
         }
         Write-Log "Restore ${DatabaseName}_Restore Done."
     }
