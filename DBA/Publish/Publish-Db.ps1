@@ -9,7 +9,7 @@
 .PARAMETER DatabaseName
 The name of the database to be published (restored).
 .PARAMETER BackupRoot
- The root folder containing one or more backup files for the database.
+ The root folder (from the mssql server perspective) containing one or more backup files for the database
 .PARAMETER Steps
     A comma-separated list of steps to perform. Valid steps are:
     - Restore: Restores the database from backup files to a temporary database named '<DatabaseName>_Restore'.
