@@ -1,2 +1,5 @@
 #visual studio
 .vs/
+
+# ignore log files
+*.log
