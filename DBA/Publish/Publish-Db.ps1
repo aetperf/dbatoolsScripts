@@ -98,18 +98,18 @@ try {
     $instance = Connect-DbaInstance -SqlInstance $ServerName -ErrorAction Stop
     Write-Log "Connected to $($instance.DomainInstanceName)"
 
+    ####################################################
+    ## RESTORE STEP
+    ####################################################
+
     # Check if Restore step is to be performed
     if ($stepsToPerform -contains "Restore") 
     {
-
-        ${suffixdatetime} = Get-Date -Format "yyyyMMdd_HHmmss"
-
-              
-        Write-Log "Restore step selected."
-        $suffixdatetime = Get-Date -Format "yyyyMMdd_HHmmss"
+        Write-Log "Restore step selected."        
+        ${suffixdatetime} = Get-Date -Format "yyyyMMdd_HHmmss"        
         
-        if ($PSCmdlet.ShouldProcess("$ServerName/$DatabaseName", "Restore from $BackupRoot using suffix ${DatabaseName}_Restore_${suffixdatetime}")) {
-            Write-Log "Starting restore ${DatabaseName} into ${DatabaseName}_Restore..."
+        if ($PSCmdlet.ShouldProcess("$ServerName/$DatabaseName", "Restore from $BackupRoot using new names for files : ${DatabaseName}_Restore_${suffixdatetime}")) {
+            Write-Log "Starting restore backup files in $BackupRoot into ${DatabaseName}_Restore..."
             $restoreresults=Restore-DbaDatabase `
                 -SqlInstance $ServerName `
                 -Path $BackupRoot `
@@ -138,7 +138,9 @@ try {
         Write-Log "Restore ${DatabaseName}_Restore Done."
     }
 
-
+    ####################################################
+    ## SWAP STEP
+    ####################################################
     # Check if Swap step is to be performed
     if ($stepsToPerform -contains "Swap") 
     {
@@ -151,45 +153,140 @@ try {
         Write-Log "Renaming databases..."
         
         if ($PSCmdlet.ShouldProcess("Renaming", "Renamed ${DatabaseName} to ${DatabaseName}_temp")) {
-        Rename-DbaDatabase `
+        $renameresult=Rename-DbaDatabase `
             -SqlInstance $ServerName `
             -Database ${DatabaseName} `
             -DatabaseName ${DatabaseName}_temp `
             -Move `
             -Force `
             -EnableException `
-            -ErrorAction Stop
+            -ErrorAction Stop `
+            -ErrorVariable errors
+
+            if ($renameresult.Status -ne "FULL") {
+            errors | ForEach-Object {
+                Write-Log "  $_"
+            }   
+            throw "Failed to rename original database ${DatabaseName} to ${DatabaseName}_temp. Aborting swap."
+            }
+            Write-Log "Renamed original ${DatabaseName} to ${DatabaseName}_temp succeed"
         }
-        Write-Log "Renamed original database to ${DatabaseName}_temp."
+        
         
         if ($PSCmdlet.ShouldProcess("Renaming", "Renamed ${DatabaseName}_Restore to ${DatabaseName}.")) {
-        Rename-DbaDatabase `
+        $renameresult=Rename-DbaDatabase `
             -SqlInstance $ServerName `
             -Database ${DatabaseName}_Restore `
             -DatabaseName ${DatabaseName} `
             -Force `
             -Move `
             -EnableException `
-            -ErrorAction Stop
+            -ErrorAction Stop `
+            -ErrorVariable errors
+        
+            if ($renameresult.Status -ne "FULL") {
+                errors | ForEach-Object {
+                    Write-Log "  $_"
+                }   
+                throw "Failed to rename restored database ${DatabaseName}_Restore to ${DatabaseName}. Aborting swap."
+            }
+            Write-Log "Renamed ${DatabaseName}_Restore to ${DatabaseName} succeed"
         }
-        Write-Log "Renamed ${DatabaseName}_Restore to ${DatabaseName}."
+        
 
         if ($PSCmdlet.ShouldProcess("Renaming", "Renamed ${DatabaseName}_temp back to ${DatabaseName}_Restore.")) {
-        Rename-DbaDatabase `
+        $renameresult=Rename-DbaDatabase `
             -SqlInstance $ServerName `
             -Database ${DatabaseName}_temp `
             -DatabaseName ${DatabaseName}_Restore `
             -Force `
             -Move `
             -EnableException `
-            -ErrorAction Stop
-        }
-        Write-Log "Renamed ${DatabaseName}_temp back to ${DatabaseName}_Restore."
+            -ErrorAction Stop `
+            -ErrorVariable errors
 
+            if ($renameresult.Status -ne "FULL") {
+                errors | ForEach-Object {
+                    Write-Log "  $_"
+                }   
+                throw "Failed to rename temp database ${DatabaseName}_temp back to ${DatabaseName}_Restore. Manual intervention may be required."
+            }
+            Write-Log "Renamed ${DatabaseName}_temp back to ${DatabaseName}_Restore succeed"
+        }
+        
         Write-Log "Renaming completed."  
     }
-
     Write-Log "Publish-Db completed for Step(s): $Steps"
+
+    ####################################################
+    ## Polish STEP
+    ####################################################
+    Write-Log "Polishing..."
+
+    Write-Log "Setting owner to 'sa' for the restored database..."
+    if ($PSCmdlet.ShouldProcess("$ServerName/$DatabaseName", "Set database owner to 'sa'")) {
+        $result = Set-DbaDbOwner `
+            -SqlInstance $ServerName `
+            -Database $DatabaseName `
+            -ErrorAction Stop `
+            -EnableException `
+            -ErrorVariable errors
+        
+        # if there were errors, log them but continue
+        if ($errors) {
+            Write-Log "Errors encountered while setting owner to 'sa':"
+            $result | ForEach-Object {
+                Write-Log "  $_"
+            }
+            $errors | ForEach-Object {
+                Write-Log "ERROR :  $_"
+            }   
+        }
+        else {
+            Write-Log "Set $DatabaseName owner to 'sa' succeeded."
+        }    
+    }   
+    
+    Write-Log "Automap orphaned users for the restored database... "
+    if ($PSCmdlet.ShouldProcess("$ServerName/$DatabaseName", "Automap orphaned users for the restored database...")) {
+        $result =Repair-DbaDbOrphanUser `
+            -SqlInstance $ServerName `
+            -Database $DatabaseName `
+            -ErrorAction SilentlyContinue `
+            -ErrorVariable errors
+        Write-Log "Try automapped orphaned users for the restored database."
+        $result | ForEach-Object {
+            Write-Log "  $_"
+        }
+    }
+    Write-Log "Setting the _Restore database to RESTRICTED_USER mode..."    
+    # set the restored database to restricted user mode
+    if ($PSCmdlet.ShouldProcess("$ServerName/$DatabaseName", "Set database to RESTRICTED_USER mode")) {
+        $result = Set-DbaDbState `
+            -SqlInstance $ServerName `
+            -Database ${DatabaseName}_Restore `
+            -RestrictedUser `
+            -Force `
+            -EnableException `
+            -ErrorAction SilentlyContinue `
+            -ErrorVariable errors
+
+        if ($errors) {
+            Write-Log "Errors encountered while setting RESTRICTED_USER mode:"
+            $result | ForEach-Object {
+                Write-Log "  $_"
+            }
+            $errors | ForEach-Object {
+                Write-Log "ERROR :  $_"
+            }   
+        }
+        else {
+            Write-Log "Set database ${DatabaseName}_Restore to RESTRICTED_USER mode succeeded."
+        }
+        
+    }
+
+    Write-Log "Polishing completed."
     exit 0
 
 }
