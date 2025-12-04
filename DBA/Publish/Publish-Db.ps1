@@ -104,47 +104,13 @@ try {
 
         ${suffixdatetime} = Get-Date -Format "yyyyMMdd_HHmmss"
 
-        # Validate $Database backup parts (in BackupRoot) using a VerifyOnly and check for warnings
-        Write-Log "Validating backup files for database ${DatabaseName} in ${BackupRoot}..."
-        Restore-DbaDatabase `
-                -SqlInstance $ServerName `
-                -Path $BackupRoot `
-                -DatabaseName ${DatabaseName}_Restore `
-                -DestinationFileSuffix "_${suffixdatetime}" `
-                -WithReplace `
-                -EnableException `
-                -ReplaceDbNameInFile `
-                -ErrorAction Stop `
-                -VerifyOnly `
-                -ErrorVariable errors `
-
-        $errorsCount = $errors.Count
-        if ($errorsCount -gt 0) {   
-            Write-Log "Backup validation failed with error(s):"
-            
-           $errors | ForEach-Object {
-                Write-Log "  $_"
-            }
-            
-                       
-            throw "Backup validation failed with error(s). See log for details."
-        }
-        else {
-            Write-Log "Backup validation succeeded with no errors."
-        }
-
-        # Check if there are any warnings in the verification results
-        
-        Write-Log "Backup validation completed."
-
-
-       
+              
         Write-Log "Restore step selected."
         $suffixdatetime = Get-Date -Format "yyyyMMdd_HHmmss"
         
         if ($PSCmdlet.ShouldProcess("$ServerName/$DatabaseName", "Restore from $BackupRoot using suffix ${DatabaseName}_Restore_${suffixdatetime}")) {
             Write-Log "Starting restore ${DatabaseName} into ${DatabaseName}_Restore..."
-            Restore-DbaDatabase `
+            $restoreresults=Restore-DbaDatabase `
                 -SqlInstance $ServerName `
                 -Path $BackupRoot `
                 -DatabaseName ${DatabaseName}_Restore `
@@ -155,14 +121,15 @@ try {
                 -ErrorAction Stop `
                 -ErrorVariable errors
                 
-            if( $errors.Count -gt 0 ) {
+            if (-not $restoreresults -or ($restoreresults | Where-Object { -not $_.RestoreComplete })) {
                 Write-Log "Restore encountered error(s):"
                 $errors | ForEach-Object {
                     Write-Log "  $_"
                 }
-                throw "Restore encountered error(s). See log for details."
+                throw "Restore did not complete successfully. See log for details."
             }
             else {
+                
                 Write-Log "Restore completed."
             }            
                 
@@ -183,13 +150,14 @@ try {
         # 3 ) Rename the temp database back to ${DatabaseName}_restore  
         Write-Log "Renaming databases..."
         
-        if ($PSCmdlet.ShouldProcess("Renaming", "Renamed original database to ${DatabaseName}_temp")) {
+        if ($PSCmdlet.ShouldProcess("Renaming", "Renamed ${DatabaseName} to ${DatabaseName}_temp")) {
         Rename-DbaDatabase `
             -SqlInstance $ServerName `
             -Database ${DatabaseName} `
             -DatabaseName ${DatabaseName}_temp `
             -Move `
             -Force `
+            -EnableException `
             -ErrorAction Stop
         }
         Write-Log "Renamed original database to ${DatabaseName}_temp."
@@ -201,6 +169,7 @@ try {
             -DatabaseName ${DatabaseName} `
             -Force `
             -Move `
+            -EnableException `
             -ErrorAction Stop
         }
         Write-Log "Renamed ${DatabaseName}_Restore to ${DatabaseName}."
@@ -212,6 +181,7 @@ try {
             -DatabaseName ${DatabaseName}_Restore `
             -Force `
             -Move `
+            -EnableException `
             -ErrorAction Stop
         }
         Write-Log "Renamed ${DatabaseName}_temp back to ${DatabaseName}_Restore."
