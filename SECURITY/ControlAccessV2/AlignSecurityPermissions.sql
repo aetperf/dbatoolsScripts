@@ -2,7 +2,7 @@ USE [DBATOOLS]
 
 GO
 
-/****** Object:  StoredProcedure [security].[AlignSecurityPermissions]    Script Date: 08/12/2025 09:49:16 ******/
+/****** Object:  StoredProcedure [security].[AlignSecurityPermissions]    Script Date: 08/12/2025 10:11:49 ******/
 
 SET ANSI_NULLS ON
 
@@ -26,9 +26,11 @@ CREATE   PROCEDURE [security].[AlignSecurityPermissions]
 
     @ExcludeDatabases NVARCHAR(MAX) = NULL,    -- Liste de patterns de base à exclure
 
-    @Execute CHAR(1) = 'N',                 -- 'Y' ou 'N'
+    @Execute CHAR(1) = 'N',                  -- 'Y' ou 'N'
 
-    @GrantorName NVARCHAR(MAX) = NULL        -- Liste de patterns sur Grantor
+    @GrantorName NVARCHAR(MAX) = NULL ,       -- Liste de patterns sur Grantor
+
+              @DatabaseGroupName NVARCHAR(MAX) = NULL  --Liste de patterns de group de base (si NULL, toutes les bases même celle qui ne sont pas dans un groupe)
 
 AS
 
@@ -146,6 +148,8 @@ BEGIN
 
     FROM [security].[VW_CheckSecurityComparison] v
 
+              LEFT JOIN [security].[DatabaseGroup] d ON v.DatabaseName=d.DatabaseName
+
     WHERE
 
         v.SQLStatement IS NOT NULL -- On ne prend que les lignes où une action est nécessaire
@@ -168,7 +172,7 @@ BEGIN
 
         )
 
-        -- Filtrage des groupes de bases
+        -- Filtrage des grantors
 
         AND (
 
@@ -183,6 +187,24 @@ BEGIN
                                                          FROM STRING_SPLIT(@GrantorName, ',') AS s
 
                                                          WHERE v.Grantor LIKE REPLACE(s.value, '''', '''''')
+
+                                          )
+
+        )
+
+                            -- Filtrage des groupes de bases
+
+        AND (
+
+                                          @DatabaseGroupName IS NULL
+
+                                          OR EXISTS(
+
+                                                         SELECT 1
+
+                                                         FROM STRING_SPLIT(@DatabaseGroupName, ',') AS s
+
+                                                         WHERE d.DatabaseGroupName LIKE REPLACE(s.value, '''', '''''')
 
                                           )
 
