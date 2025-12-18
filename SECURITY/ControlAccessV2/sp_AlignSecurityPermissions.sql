@@ -14,7 +14,7 @@ GO
 
  
 
-CREATE   PROCEDURE [security].[AlignSecurityPermissions]
+CREATE   PROCEDURE [security].[sp_AlignSecurityPermissions]
 
     @IgnoreRoles NVARCHAR(MAX) = NULL,       -- Liste de patterns de rôles à ignorer
 
