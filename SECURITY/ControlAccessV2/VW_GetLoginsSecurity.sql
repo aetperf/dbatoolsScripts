@@ -30,7 +30,7 @@ CREATE     VIEW [security].[VW_GetCurrentLoginsSecurity]
 
 AS
 
-SELECT *
+SELECT [Id], [InstanceName], [GroupName], [LoginName], [LoginType], [MemberName], [MemberType], [Sid], [AuditDate]
 
 FROM [security].[LoginsSecurityHistory]
 
