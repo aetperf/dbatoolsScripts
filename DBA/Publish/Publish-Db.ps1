@@ -58,7 +58,7 @@ param(
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
-$LogFile = Join-Path -Path $LogDir -ChildPath ("PublishDb_{0:yyyyMMdd_HHmmss}.log" -f (Get-Date))   
+$LogFile = Join-Path -Path $LogDir -ChildPath ("PublishDb_to_${ServerName}_{0:yyyyMMdd_HHmmss}.log" -f (Get-Date))   
 
 function Write-Log {
     param([string]$Message)
@@ -81,6 +81,9 @@ try {
 
     Write-Log "Importing dbatools..."
     Import-Module dbatools -ErrorAction Stop
+	
+	Set-DbatoolsConfig -FullName sql.connection.encrypt -Value $true
+	Set-DbatoolsConfig -FullName sql.connection.trustcert -Value $true
 
     # validate $Steps parameter
     $validSteps = @("Restore", "Swap")
@@ -285,13 +288,39 @@ try {
         }
         
     }
+	
+	Write-Log "Setting the database to MULTI_USER mode..."    
+    # set the database to MULTI_USER mode
+    if ($PSCmdlet.ShouldProcess("$ServerName/$DatabaseName", "Set database to MULTI_USER mode")) {
+        $result = Set-DbaDbState `
+            -SqlInstance $ServerName `
+            -Database ${DatabaseName} `
+            -MultiUser `
+            -Force `
+            -EnableException `
+            -ErrorAction Stop `
+            -ErrorVariable errors
+
+        if ($errors) {
+            Write-Log "Errors encountered while setting MULTI_USER mode:"
+            $result | ForEach-Object {
+                Write-Log "  $_"
+            }
+            $errors | ForEach-Object {
+                Write-Log "ERROR :  $_"
+            }   
+        }
+        else {
+            Write-Log "Set database ${DatabaseName} to MULTI_USER mode succeeded."
+        }
+        
+    }
 
     Write-Log "Polishing completed."
     exit 0
 
 }
 catch {
-    Write-Error $_
     Write-Log "Failed: $($_.Exception.Message)"
     exit 1
 }
