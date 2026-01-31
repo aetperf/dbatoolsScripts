@@ -16,7 +16,7 @@ GO
 
 ALTER PROCEDURE dbo.sp_UpdateStats2
       @Databases nvarchar(max) = NULL
-    , @UpdateStatistics nvarchar(max) = NULL
+    , @UpdateStatistics nvarchar(max) = N'ALL'
     , @OnlyModifiedStatistics nvarchar(max) = 'N'
     , @StatisticsModificationLevel int = NULL
     , @StatisticsSample int = NULL
