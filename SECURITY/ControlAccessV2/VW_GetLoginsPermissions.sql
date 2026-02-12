@@ -30,7 +30,7 @@ CREATE     VIEW [security].[VW_GetCurrentLoginsPermissions]
 
 AS
 
-SELECT  [Id], [DatabaseName], [LoginName], [RoleName], [AuditDate], [HasDbAccess]
+SELECT  [Id], [DatabaseName], [LoginName], [RoleName], [AuditDate], [HasDbAccess], [Sid]
 
 FROM [security].[LoginsPermissionsHistory]
 
