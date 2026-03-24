@@ -2,7 +2,7 @@
 
 .SYNOPSIS
 
-    Restore a schema from a source SQL Server database to a target database, including tables, indexes, constraints, and triggers.
+    Restore a schema from a source SQL Server database to a target database, including tables, indexes, constraints, triggers, views, functions, procedures, and synonyms.
 
  
 
@@ -3474,9 +3474,167 @@ else{
  
 
 #############################################################################################
+## DROP SYNONYMS
+#############################################################################################
+Write-Log -Level INFO -Message "STEP : DROP SYNONYMS"
+$ErrorCodeDropSynonym = 0
+$startStep = Get-Date
 
+# Retrieve synonyms from target schema
+$synonymsTarget = Invoke-DbaQuery -SqlInstance $SqlInstance -Database $TargetDB -Query @"
+SELECT 
+    s.name AS SchemaName,
+    syn.name AS SynonymName
+FROM sys.synonyms syn
+JOIN sys.schemas s ON s.schema_id = syn.schema_id
+WHERE s.name = '$SchemaName'
+ORDER BY syn.name
+"@
+
+Write-Log -Level INFO -Message ("Found {0} synonyms to drop in target schema '{1}'." -f $synonymsTarget.Count, $SchemaName)
+
+# Process synonyms sequentially (no parallel processing as requested)
+foreach ($synonym in $synonymsTarget) {
+    $synSchema = $synonym.SchemaName
+    $synName = $synonym.SynonymName
+    $qualifiedName = "[$synSchema].[$synName]"
+    
+    $dropQuery = "IF OBJECT_ID(N'$qualifiedName', N'SN') IS NOT NULL DROP SYNONYM $qualifiedName;"
+    $dropQueryLog = $dropQuery.Replace("'", "''") -replace "`r`n", " " -replace "`n", " " -replace "`r", " "
+    
+    Write-Log -Level DEBUG -Message "Dropping synonym $qualifiedName"
+    
+    if (!$WhatIf) {
+        try {
+            Invoke-DbaQuery -SqlInstance $SqlInstance -Database $TargetDB -Query $dropQuery -EnableException
+            
+            $logQuery = @"
+INSERT INTO dbo.RestoreSchemaLogDetail (RestoreId, Step, ObjectType, ObjectSchema, ObjectName, Action, Command, ErrorCode, Message, LogDate)
+VALUES ($RestoreId, 'DROP SYNONYM', 'SYNONYM', '$synSchema', '$synName', 'DROP', '$dropQueryLog', 0, 'Success', GETDATE())
+"@
+            Invoke-DbaQuery -SqlInstance $LogInstance -Database $LogDatabase -Query $logQuery
+        } catch {
+            $errorMsg = $_.Exception.Message.Replace("'", "''")
+            
+            $logQuery = @"
+INSERT INTO dbo.RestoreSchemaLogDetail (RestoreId, Step, ObjectType, ObjectSchema, ObjectName, Action, Command, ErrorCode, Message, LogDate)
+VALUES ($RestoreId, 'DROP SYNONYM', 'SYNONYM', '$synSchema', '$synName', 'DROP', '$dropQueryLog', 1, '$errorMsg', GETDATE())
+"@
+            Invoke-DbaQuery -SqlInstance $LogInstance -Database $LogDatabase -Query $logQuery
+            
+            Write-Log -Level ERROR -Message "Failed to drop synonym $qualifiedName : $errorMsg"
+            $ErrorCode = 1
+            $ErrorCodeDropSynonym = 1
+        }
+    } else {
+        Write-Log -Level INFO -Message "[WhatIf] Would run: $dropQuery"
+    }
+}
+
+if ($ErrorCode -eq 1 -and !$ContinueOnError) {
+    $end = Get-Date
+    $RestoreEndDatetime = $end.ToString("yyyy-MM-dd HH:mm:ss")
+    $logQuery = "INSERT INTO dbo.RestoreSchemaLog (RestoreId,RestoreStartDatetime,RestoreEndDatetime,SourceDB,TargetDB,SchemaName,ErrorCode,Message)
+    VALUES ($RestoreId,'$RestoreStartDatetime','$RestoreEndDatetime','$SourceDB','$TargetDB','$SchemaNameForLog',$ErrorCode,'Error during the DROP SYNONYM')"
+    Invoke-DbaQuery -SqlInstance $LogInstance -Database $LogDatabase -Query $logQuery
+    return
+}
+
+$endStep = Get-Date
+$durationInSeconds = ($endStep - $startStep).TotalSeconds
+$roundedDuration = [math]::Round($durationInSeconds, 2)
+
+if ($ErrorCodeDropSynonym -eq 1) {
+    Write-Log -Level ERROR -Message "STEP : DROP SYNONYMS in $roundedDuration seconds | FAILED"
+} else {
+    Write-Log -Level INFO -Message "STEP : DROP SYNONYMS in $roundedDuration seconds | SUCCEED"
+}
+
+ 
+
+#############################################################################################
+## CREATE SYNONYMS
+#############################################################################################
+Write-Log -Level INFO -Message "STEP : CREATE SYNONYMS"
+$ErrorCodeCreateSynonym = 0
+$startStep = Get-Date
+
+# Retrieve synonyms from source schema
+$synonymsSource = Invoke-DbaQuery -SqlInstance $SqlInstance -Database $SourceDB -Query @"
+SELECT 
+    s.name AS SchemaName,
+    syn.name AS SynonymName,
+    syn.base_object_name AS BaseObject
+FROM sys.synonyms syn
+JOIN sys.schemas s ON s.schema_id = syn.schema_id
+WHERE s.name = '$SchemaName'
+ORDER BY syn.name
+"@
+
+Write-Log -Level INFO -Message ("Found {0} synonyms to create from source schema '{1}'." -f $synonymsSource.Count, $SchemaName)
+
+# Process synonyms sequentially (no parallel processing as requested)
+foreach ($synonym in $synonymsSource) {
+    $synSchema = $synonym.SchemaName
+    $synName = $synonym.SynonymName
+    $baseObject = $synonym.BaseObject
+    $qualifiedName = "[$synSchema].[$synName]"
+    
+    $createQuery = "CREATE SYNONYM $qualifiedName FOR $baseObject;"
+    $createQueryLog = $createQuery.Replace("'", "''") -replace "`r`n", " " -replace "`n", " " -replace "`r", " "
+    
+    Write-Log -Level DEBUG -Message "Creating synonym $qualifiedName -> $baseObject"
+    
+    if (!$WhatIf) {
+        try {
+            Invoke-DbaQuery -SqlInstance $SqlInstance -Database $TargetDB -Query $createQuery -EnableException
+            
+            $logQuery = @"
+INSERT INTO dbo.RestoreSchemaLogDetail (RestoreId, Step, ObjectType, ObjectSchema, ObjectName, Action, Command, ErrorCode, Message, LogDate)
+VALUES ($RestoreId, 'CREATE SYNONYM', 'SYNONYM', '$synSchema', '$synName', 'CREATE', '$createQueryLog', 0, 'Success', GETDATE())
+"@
+            Invoke-DbaQuery -SqlInstance $LogInstance -Database $LogDatabase -Query $logQuery
+        } catch {
+            $errorMsg = $_.Exception.Message.Replace("'", "''")
+            
+            $logQuery = @"
+INSERT INTO dbo.RestoreSchemaLogDetail (RestoreId, Step, ObjectType, ObjectSchema, ObjectName, Action, Command, ErrorCode, Message, LogDate)
+VALUES ($RestoreId, 'CREATE SYNONYM', 'SYNONYM', '$synSchema', '$synName', 'CREATE', '$createQueryLog', 1, '$errorMsg', GETDATE())
+"@
+            Invoke-DbaQuery -SqlInstance $LogInstance -Database $LogDatabase -Query $logQuery
+            
+            Write-Log -Level ERROR -Message "Failed to create synonym $qualifiedName : $errorMsg"
+            $ErrorCode = 1
+            $ErrorCodeCreateSynonym = 1
+        }
+    } else {
+        Write-Log -Level INFO -Message "[WhatIf] Would run: $createQuery"
+    }
+}
+
+if ($ErrorCode -eq 1 -and !$ContinueOnError) {
+    $end = Get-Date
+    $RestoreEndDatetime = $end.ToString("yyyy-MM-dd HH:mm:ss")
+    $logQuery = "INSERT INTO dbo.RestoreSchemaLog (RestoreId,RestoreStartDatetime,RestoreEndDatetime,SourceDB,TargetDB,SchemaName,ErrorCode,Message)
+    VALUES ($RestoreId,'$RestoreStartDatetime','$RestoreEndDatetime','$SourceDB','$TargetDB','$SchemaNameForLog',$ErrorCode,'Error during the CREATE SYNONYM')"
+    Invoke-DbaQuery -SqlInstance $LogInstance -Database $LogDatabase -Query $logQuery
+    return
+}
+
+$endStep = Get-Date
+$durationInSeconds = ($endStep - $startStep).TotalSeconds
+$roundedDuration = [math]::Round($durationInSeconds, 2)
+
+if ($ErrorCodeCreateSynonym -eq 1) {
+    Write-Log -Level ERROR -Message "STEP : CREATE SYNONYMS in $roundedDuration seconds | FAILED"
+} else {
+    Write-Log -Level INFO -Message "STEP : CREATE SYNONYMS in $roundedDuration seconds | SUCCEED"
+}
+
+ 
+
+#############################################################################################
 ## LOG TABLE
-
 #############################################################################################
 
  
