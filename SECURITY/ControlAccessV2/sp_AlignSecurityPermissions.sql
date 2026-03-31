@@ -32,7 +32,9 @@ ALTER   PROCEDURE [security].[sp_AlignSecurityPermissions]
 
     @GrantorName NVARCHAR(MAX) = NULL ,       -- Liste de patterns sur Grantor
 
-              @DatabaseGroupName NVARCHAR(MAX) = NULL  --Liste de patterns de group de base (si NULL, toutes les bases même celle qui ne sont pas dans un groupe)
+              @DatabaseGroupName NVARCHAR(MAX) = NULL,  --Liste de patterns de group de base (si NULL, toutes les bases même celle qui ne sont pas dans un groupe)
+
+    @ActionType VARCHAR(20) = 'ALL'          -- 'ALL' (tout), 'GRANT' (uniquement ajouts), 'REVOKE' (uniquement suppressions)
 
 AS
 
@@ -62,6 +64,8 @@ BEGIN
 
             RoleName NVARCHAR(255),
 
+            ActionType VARCHAR(50) NULL,     -- Stocke CheckStatusDescription: 'GRANT', 'REVOKE', 'ANALYSE HASDBACCESS', 'OK'
+
             AlignCommandStatus INT NOT NULL, -- -1: Execute=N, 0: OK, 1: Erreur
 
             SQLStatement NVARCHAR(MAX),
@@ -71,6 +75,20 @@ BEGIN
             ErrorMessage NVARCHAR(MAX)
 
         );
+
+    END
+
+ 
+
+    -- Ajout de la colonne ActionType si elle n'existe pas (pour les tables existantes)
+
+    IF COL_LENGTH('[security].[AlignSecurityPermissionsLogs]', 'ActionType') IS NULL
+
+    BEGIN
+
+        ALTER TABLE [security].[AlignSecurityPermissionsLogs]
+
+        ADD ActionType VARCHAR(50) NULL;
 
     END
 
@@ -89,6 +107,8 @@ BEGIN
     DECLARE @LoginName NVARCHAR(255);
 
     DECLARE @RoleName NVARCHAR(255);
+
+    DECLARE @CheckStatusDescription VARCHAR(50);
 
     DECLARE @AlignCommandStatus INT;
 
@@ -112,6 +132,20 @@ BEGIN
 
  
 
+    -- Vérification du paramètre @ActionType
+
+    IF @ActionType NOT IN ('ALL', 'GRANT', 'REVOKE')
+
+    BEGIN
+
+        RAISERROR('Le paramètre @ActionType doit être ''ALL'', ''GRANT'' ou ''REVOKE''.', 16, 1);
+
+        RETURN;
+
+    END
+
+ 
+
     -- Création d'une table temporaire pour stocker les actions à effectuer
 
     CREATE TABLE #ActionsToAlign (
@@ -121,6 +155,8 @@ BEGIN
         LoginName NVARCHAR(255),
 
         RoleName NVARCHAR(255),
+
+        CheckStatusDescription VARCHAR(50),
 
         SQLStatement NVARCHAR(MAX),
 
@@ -132,9 +168,9 @@ BEGIN
 
     -- Remplissage de la table temporaire avec les actions à effectuer,
 
-    -- en filtrant sur les groupes de bases, les rôles ignorés, et les logins à inclure/exclure
+    -- en filtrant sur les groupes de bases, les rôles ignorés, les logins à inclure/exclure, et le type d'action
 
-    INSERT INTO #ActionsToAlign (DatabaseName, LoginName, RoleName, SQLStatement, UndoSQLStatement)
+    INSERT INTO #ActionsToAlign (DatabaseName, LoginName, RoleName, CheckStatusDescription, SQLStatement, UndoSQLStatement)
 
     SELECT DISTINCT
 
@@ -143,6 +179,8 @@ BEGIN
         v.LoginName,
 
         v.RoleName,
+
+        v.CheckStatusDescription,
 
         v.SQLStatement,
 
@@ -155,6 +193,16 @@ BEGIN
     WHERE
 
         v.SQLStatement IS NOT NULL -- On ne prend que les lignes où une action est nécessaire
+
+        -- Filtrage selon le type d'action demandé
+
+        AND (
+
+            @ActionType = 'ALL'
+
+            OR v.CheckStatusDescription = @ActionType
+
+        )
 
         -- Filtrage des rôles ignorés
 
@@ -296,7 +344,7 @@ BEGIN
 
     DECLARE ActionCursor CURSOR FOR
 
-    SELECT DatabaseName, LoginName, RoleName, SQLStatement, UndoSQLStatement
+    SELECT DatabaseName, LoginName, RoleName, CheckStatusDescription, SQLStatement, UndoSQLStatement
 
     FROM #ActionsToAlign;
 
@@ -304,7 +352,7 @@ BEGIN
 
     OPEN ActionCursor;
 
-    FETCH NEXT FROM ActionCursor INTO @DatabaseName, @LoginName, @RoleName, @CurrentSQLStatement, @CurrentUndoSQLStatement;
+    FETCH NEXT FROM ActionCursor INTO @DatabaseName, @LoginName, @RoleName, @CheckStatusDescription, @CurrentSQLStatement, @CurrentUndoSQLStatement;
 
  
 
@@ -322,7 +370,7 @@ BEGIN
 
         INSERT INTO [security].[AlignSecurityPermissionsLogs] (
 
-            RunId, ExecuteDate, DatabaseName, LoginName, RoleName,
+            RunId, ExecuteDate, DatabaseName, LoginName, RoleName, ActionType,
 
             AlignCommandStatus, SQLStatement, UndoSQLStatement, ErrorMessage
 
@@ -330,7 +378,7 @@ BEGIN
 
         VALUES (
 
-            @RunId, @ExecuteDate, @DatabaseName, @LoginName, @RoleName,
+            @RunId, @ExecuteDate, @DatabaseName, @LoginName, @RoleName, @CheckStatusDescription,
 
             @AlignCommandStatus, @CurrentSQLStatement, @CurrentUndoSQLStatement, @ErrorMessage
 
@@ -374,7 +422,7 @@ BEGIN
 
  
 
-        FETCH NEXT FROM ActionCursor INTO @DatabaseName, @LoginName, @RoleName, @CurrentSQLStatement, @CurrentUndoSQLStatement;
+        FETCH NEXT FROM ActionCursor INTO @DatabaseName, @LoginName, @RoleName, @CheckStatusDescription, @CurrentSQLStatement, @CurrentUndoSQLStatement;
 
     END
 
