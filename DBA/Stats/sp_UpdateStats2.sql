@@ -1,3 +1,151 @@
+/*
+====================================================================================================
+  Procedure : dbo.sp_UpdateStats2
+  Database  : any (run in target database)
+  Schema    : dbo
+----------------------------------------------------------------------------------------------------
+  Author(s) : rferraton
+  Created   : 2026-01-20
+  Version   : 1.1.0
+
+  Version History
+  ---------------
+  v1.0.0  2026-01-20  rferraton  Initial creation
+  v1.1.0  2026-01-31  rferraton  Set default value for @UpdateStatistics to 'ALL'
+
+====================================================================================================
+  Description
+  -----------
+  Updates statistics on one or more databases with fine-grained filtering and adaptive sampling.
+  Supports partition-level statistics, modification-level thresholds, time-boxing, and optional
+  command logging to dbo.CommandLog (Ola Hallengren-compatible).
+
+====================================================================================================
+  Parameters
+  ----------
+  @Databases                nvarchar(max)  = NULL
+      Comma-separated list of database names to process.
+      NULL = current database only.
+
+  @UpdateStatistics         nvarchar(max)  = 'ALL'
+      Type of statistics to update.
+      ALL     = both index and column statistics  (default)
+      INDEX   = index statistics only
+      COLUMNS = column statistics only
+
+  @OnlyModifiedStatistics   nvarchar(max)  = 'N'
+      Y = skip statistics that have not been modified since the last update.
+      Requires sys.dm_db_stats_properties. Mutually exclusive with @StatisticsModificationLevel.
+
+  @StatisticsModificationLevel  int        = NULL
+      Minimum row-modification percentage (0-100) required before a statistic is updated.
+      Requires sys.dm_db_stats_properties. Mutually exclusive with @OnlyModifiedStatistics.
+
+  @StatisticsSample         int            = NULL
+      Fixed sample percentage (0-100) to pass to UPDATE STATISTICS … SAMPLE n PERCENT.
+      NULL = let SQL Server choose (or use adaptive tier below).
+      Mutually exclusive with @StatisticsResample = 'Y'.
+
+  @StatisticsResample       nvarchar(max)  = 'N'
+      Y = use UPDATE STATISTICS … WITH RESAMPLE.
+      Mutually exclusive with @StatisticsSample.
+
+  @PartitionLevel           nvarchar(max)  = 'Y'
+      Y = update statistics at the individual partition level (incremental stats).
+      Requires sys.dm_db_incremental_stats_properties.
+
+  @TimeLimit                int            = NULL
+      Maximum total execution time in seconds. The procedure stops processing new
+      objects once the limit is exceeded. NULL = no limit.
+
+  @Delay                    int            = NULL
+      Pause in seconds between each UPDATE STATISTICS statement (0-86399). NULL = no pause.
+
+  @LogToTable               nvarchar(max)  = 'N'
+      Y = log every command and its outcome to dbo.CommandLog (must exist in target DB).
+
+  @Execute                  nvarchar(max)  = 'Y'
+      Y = execute the generated UPDATE STATISTICS commands.
+      N = print commands only (dry-run / what-if mode).
+
+  @IncludeSchemas           nvarchar(max)  = NULL
+      Comma-separated list of schema name patterns (LIKE wildcards accepted) to include.
+
+  @ExcludeSchemas           nvarchar(max)  = NULL
+      Comma-separated list of schema name patterns to exclude.
+
+  @IncludeTables            nvarchar(max)  = NULL
+      Comma-separated list of table name patterns (LIKE wildcards accepted) to include.
+
+  @ExcludeTables            nvarchar(max)  = NULL
+      Comma-separated list of table name patterns to exclude.
+
+  @IncludeStats             nvarchar(max)  = NULL
+      Comma-separated list of statistic name patterns to include.
+
+  @ExcludeStats             nvarchar(max)  = NULL
+      Comma-separated list of statistic name patterns to exclude.
+
+  @SamplePercentSmallTables int            = 100
+      Sample % used for tables with fewer than @ThresholdBigTables rows.
+
+  @SamplePercentBigTables   int            = 10
+      Sample % used for tables with row count between @ThresholdBigTables and
+      @ThresholdVeryBigTables.
+
+  @SamplePercentVeryBigTables int          = 1
+      Sample % used for tables exceeding @ThresholdVeryBigTables rows.
+
+  @ThresholdBigTables       int            = 1 000 000
+      Row-count boundary separating "small" from "big" tables.
+
+  @ThresholdVeryBigTables   int            = 100 000 000
+      Row-count boundary separating "big" from "very big" tables.
+      Must be >= @ThresholdBigTables.
+
+====================================================================================================
+  Usage Samples
+  -------------
+
+  -- 1. Update all statistics on the current database (defaults)
+  EXEC dbo.sp_UpdateStats2;
+
+  -- 2. Dry-run: print commands without executing
+  EXEC dbo.sp_UpdateStats2
+      @Execute = 'N';
+
+  -- 3. Update index statistics only, skip unmodified stats
+  EXEC dbo.sp_UpdateStats2
+      @UpdateStatistics        = 'INDEX'
+    , @OnlyModifiedStatistics  = 'Y';
+
+  -- 4. Adaptive sampling across multiple databases with a 1-hour time limit
+  EXEC dbo.sp_UpdateStats2
+      @Databases                  = 'AdventureWorks,AdventureWorksDW'
+    , @SamplePercentSmallTables   = 100
+    , @SamplePercentBigTables     = 20
+    , @SamplePercentVeryBigTables = 5
+    , @ThresholdBigTables         = 500000
+    , @ThresholdVeryBigTables     = 50000000
+    , @TimeLimit                  = 3600;
+
+  -- 5. Update only stats modified by at least 10 %, log to CommandLog
+  EXEC dbo.sp_UpdateStats2
+      @StatisticsModificationLevel = 10
+    , @LogToTable                  = 'Y';
+
+  -- 6. Target specific schemas/tables, exclude audit tables
+  EXEC dbo.sp_UpdateStats2
+      @IncludeSchemas = 'Sales,Purchasing'
+    , @ExcludeTables  = '%Audit%,%Log%';
+
+  -- 7. Partition-level update with a delay between commands
+  EXEC dbo.sp_UpdateStats2
+      @PartitionLevel = 'Y'
+    , @Delay          = 2;
+
+====================================================================================================
+*/
 SET ANSI_NULLS ON
 GO
 SET QUOTED_IDENTIFIER ON
