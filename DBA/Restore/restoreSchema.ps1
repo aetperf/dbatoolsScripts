@@ -2,7 +2,7 @@
 
 .SYNOPSIS
 
-    Restore a schema from a source SQL Server database to a target database, including tables, indexes, constraints, and triggers.
+    Restore a schema from a source SQL Server database to a target database, including tables, indexes, constraints, triggers, views, functions, procedures, and synonyms.
 
  
 
@@ -36,7 +36,11 @@
 
 .PARAMETER SchemaName
 
-    Name of the schema to restore (must exist in both source and target).
+    Name(s) of the schema(s) to restore. Supports multiple schemas separated by commas with wildcards and exclusions.
+    - Exact match: 'dbo'
+    - Wildcard (% = any characters): 'db%' matches all schemas starting with 'db'
+    - Exclusion (prefix -): '-dba%' excludes all schemas starting with 'dba'
+    - Combined: 'raw,db%,-dba' = schema 'raw' + all schemas starting with 'db' except 'dba'
 
  
 
@@ -124,6 +128,14 @@
 
     This restores the HumanResources schema in parallel using 4 threads, and continues processing even if some tables fail.
 
+.EXAMPLE
+
+    .\restoreSchema.ps1 -SqlInstance "MyServer\SQL01" -SourceDB "HR2022" -TargetDB "HR_RESTORE" -SchemaName "raw,db%,-dba%" -LogInstance "MyServer\SQL01" -LogDatabase "RestoreLogs"
+
+ 
+
+    This restores schema 'raw' and all schemas starting with 'db' except those starting with 'dba' (e.g., raw, dbtest, dbprod, but NOT dbatools).
+
 #>
 
  
@@ -160,13 +172,57 @@ $null = Set-DbatoolsInsecureConnection
 
  
 
-$start = Get-Date
-
-$RestoreStartDatetime = $start.ToString("yyyy-MM-dd HH:mm:ss")
-
-$RestoreId = [DateTime]::UtcNow.Ticks
-
-$ErrorCode = 0
+#############################################################################################
+## FUNCTION: RESOLVE SCHEMA PATTERNS
+#############################################################################################
+function Resolve-SchemaPatterns {
+    param(
+        [string]$PatternString,
+        [string]$SqlInstance,
+        [string]$Database
+    )
+    
+    # Split by comma and trim spaces
+    $patterns = $PatternString -split ',' | ForEach-Object { $_.Trim() }
+    
+    # Separate inclusions and exclusions
+    $inclusions = $patterns | Where-Object { -not $_.StartsWith('-') }
+    $exclusions = $patterns | Where-Object { $_.StartsWith('-') } | ForEach-Object { $_.Substring(1) }
+    
+    # Get all schemas from database
+    $allSchemas = Invoke-DbaQuery -SqlInstance $SqlInstance -Database $Database -Query "SELECT name FROM sys.schemas ORDER BY name"
+    
+    $matchedSchemas = @()
+    
+    foreach ($inclusion in $inclusions) {
+        if ($inclusion -like '*%*') {
+            # Wildcard pattern - convert SQL LIKE pattern to PowerShell
+            $psPattern = $inclusion -replace '%', '*'
+            $matched = $allSchemas | Where-Object { $_.name -like $psPattern }
+            $matchedSchemas += $matched.name
+        } else {
+            # Exact match
+            if ($allSchemas.name -contains $inclusion) {
+                $matchedSchemas += $inclusion
+            }
+        }
+    }
+    
+    # Remove duplicates
+    $matchedSchemas = $matchedSchemas | Select-Object -Unique
+    
+    # Apply exclusions
+    foreach ($exclusion in $exclusions) {
+        if ($exclusion -like '*%*') {
+            $psPattern = $exclusion -replace '%', '*'
+            $matchedSchemas = $matchedSchemas | Where-Object { $_ -notlike $psPattern }
+        } else {
+            $matchedSchemas = $matchedSchemas | Where-Object { $_ -ne $exclusion }
+        }
+    }
+    
+    return $matchedSchemas
+}
 
  
 
@@ -266,13 +322,36 @@ $db = Get-DbaDatabase -SqlInstance $Server -Database $TargetDB -ErrorAction Stop
 
 if($db.count -lt 1){
 
-    Write-Log -Level ERROR -Message "Target database '$SourceDB' does not exist or is inaccessible on instance '$SqlInstance'."
+    Write-Log -Level ERROR -Message "Target database '$TargetDB' does not exist or is inaccessible on instance '$SqlInstance'."
 
     return
 
 }
 
  
+
+#############################################################################################
+
+## RESOLVE SCHEMA PATTERNS TO ACTUAL SCHEMA LIST
+
+#############################################################################################
+
+Write-Log -Level INFO -Message "STEP : RESOLVING SCHEMA PATTERNS"
+
+try {
+    $ResolvedSchemas = Resolve-SchemaPatterns -PatternString $SchemaName -SqlInstance $SqlInstance -Database $SourceDB
+    
+    if ($ResolvedSchemas.Count -eq 0) {
+        Write-Log -Level ERROR -Message "No schemas matched the pattern '$SchemaName' in source database '$SourceDB'."
+        return
+    }
+    
+    Write-Log -Level INFO -Message "Resolved schemas: $($ResolvedSchemas -join ', ') (Total: $($ResolvedSchemas.Count))"
+    
+} catch {
+    Write-Log -Level ERROR -Message "Failed to resolve schema patterns: $_"
+    return
+}
 
  
 
@@ -384,6 +463,32 @@ if(!$WhatIf){
 
 #############################################################################################
 
+## MAIN LOOP - PROCESS EACH SCHEMA WITH ITS OWN RESTORE ID
+
+#############################################################################################
+
+$schemaCounter = 0
+foreach ($CurrentSchemaName in $ResolvedSchemas) {
+    $schemaCounter++
+    
+    Write-Log -Level INFO -Message "============================================================"
+    Write-Log -Level INFO -Message "PROCESSING SCHEMA: $CurrentSchemaName ($schemaCounter of $($ResolvedSchemas.Count))"
+    Write-Log -Level INFO -Message "============================================================"
+    
+    # Create unique RestoreId and timing for THIS schema
+    $start = Get-Date
+    $RestoreStartDatetime = $start.ToString("yyyy-MM-dd HH:mm:ss")
+    $RestoreId = [DateTime]::UtcNow.Ticks
+    $ErrorCode = 0
+    
+    # For backward compatibility with existing code, set $SchemaName to current schema
+    $SchemaName = $CurrentSchemaName
+    $SchemaNameForLog = $CurrentSchemaName
+
+ 
+
+#############################################################################################
+
 ## ENSURE SCHEMA EXISTS IN TARGET (CREATE IF MISSING) - OWNER ALWAYS dbo
 
 #############################################################################################
@@ -484,7 +589,7 @@ VALUES ($RestoreId, 'ENSURE SCHEMA IN TARGET', 'SCHEMA', '$SchemaName', '$Schema
 
                 $logQuery = "INSERT INTO dbo.RestoreSchemaLog (RestoreId,RestoreStartDatetime,RestoreEndDatetime,SourceDB,TargetDB,SchemaName,ErrorCode,Message)
 
-                             VALUES ($RestoreId,'$RestoreStartDatetime','$RestoreEndDatetime','$SourceDB','$TargetDB','$SchemaName',$ErrorCode,'Error on ENSURE SCHEMA IN TARGET')"
+                             VALUES ($RestoreId,'$RestoreStartDatetime','$RestoreEndDatetime','$SourceDB','$TargetDB','$SchemaNameForLog',$ErrorCode,'Error on ENSURE SCHEMA IN TARGET')"
 
                 Invoke-DbaQuery -SqlInstance $LogInstance -Database $LogDatabase -Query $logQuery
 
@@ -890,7 +995,7 @@ foreach ($viewName in $sortedTarget) {
 
                 $logQuery = "INSERT INTO dbo.RestoreSchemaLog (RestoreId,RestoreStartDatetime,RestoreEndDatetime,SourceDB,TargetDB,SchemaName,ErrorCode,Message)
 
-                VALUES ($RestoreId,'$RestoreStartDatetime','$RestoreEndDatetime','$SourceDB','$TargetDB','$SchemaName',$ErrorCode,'Error on DROP VIEW BEFORE DROP INSERT')"
+                VALUES ($RestoreId,'$RestoreStartDatetime','$RestoreEndDatetime','$SourceDB','$TargetDB','$SchemaNameForLog',$ErrorCode,'Error on DROP VIEW BEFORE DROP INSERT')"
 
                 Invoke-DbaQuery -SqlInstance $LogInstance -Database $LogDatabase -Query $logQuery
 
@@ -1374,7 +1479,7 @@ if($ErrorCode -eq 1 -and !$ContinueOnError){
 
     $logQuery = "INSERT INTO dbo.RestoreSchemaLog (RestoreId,RestoreStartDatetime,RestoreEndDatetime,SourceDB,TargetDB,SchemaName,ErrorCode,Message)
 
-    VALUES ($RestoreId,'$RestoreStartDatetime','$RestoreEndDatetime','$SourceDB','$TargetDB','$SchemaName',$ErrorCode,'Error during the DISABLED FOREIGN KEY TO TRUNCATE INSERT DATA')"
+    VALUES ($RestoreId,'$RestoreStartDatetime','$RestoreEndDatetime','$SourceDB','$TargetDB','$SchemaNameForLog',$ErrorCode,'Error during the DISABLED FOREIGN KEY TO TRUNCATE INSERT DATA')"
 
     Invoke-DbaQuery -SqlInstance $LogInstance -Database $LogDatabase -Query $logQuery
 
@@ -2140,7 +2245,7 @@ foreach ($tableEntry in $TableResults.GetEnumerator()) {
 
             $logQuery = "INSERT INTO dbo.RestoreSchemaLog (RestoreId,RestoreStartDatetime,RestoreEndDatetime,SourceDB,TargetDB,SchemaName,ErrorCode,Message)
 
-            VALUES ($RestoreId,'$RestoreStartDatetime','$RestoreEndDatetime','$SourceDB','$TargetDB','$SchemaName',$ErrorCode,'Error during the DROP INSERT TABLE')"
+            VALUES ($RestoreId,'$RestoreStartDatetime','$RestoreEndDatetime','$SourceDB','$TargetDB','$SchemaNameForLog',$ErrorCode,'Error during the DROP INSERT TABLE')"
 
             Invoke-DbaQuery -SqlInstance $LogInstance -Database $LogDatabase -Query $logQuery
 
@@ -2396,7 +2501,7 @@ if($ErrorCode -eq 1 -and !$ContinueOnError){
 
     $logQuery = "INSERT INTO dbo.RestoreSchemaLog (RestoreId,RestoreStartDatetime,RestoreEndDatetime,SourceDB,TargetDB,SchemaName,ErrorCode,Message)
 
-    VALUES ($RestoreId,'$RestoreStartDatetime','$RestoreEndDatetime','$SourceDB','$TargetDB','$SchemaName',$ErrorCode,'Error during the ENABLED FOREIGN KEY CONSTRAINT')"
+    VALUES ($RestoreId,'$RestoreStartDatetime','$RestoreEndDatetime','$SourceDB','$TargetDB','$SchemaNameForLog',$ErrorCode,'Error during the ENABLED FOREIGN KEY CONSTRAINT')"
 
     Invoke-DbaQuery -SqlInstance $LogInstance -Database $LogDatabase -Query $logQuery
 
@@ -2652,7 +2757,7 @@ if ($functionsSource.Count -ne 0) {
 
                     $logQuery = "INSERT INTO dbo.RestoreSchemaLog (RestoreId,RestoreStartDatetime,RestoreEndDatetime,SourceDB,TargetDB,SchemaName,ErrorCode,Message)
 
-                    VALUES ($RestoreId,'$RestoreStartDatetime','$RestoreEndDatetime','$SourceDB','$TargetDB','$SchemaName',$ErrorCode,'Error during the CREATE FUNCTION')"
+                    VALUES ($RestoreId,'$RestoreStartDatetime','$RestoreEndDatetime','$SourceDB','$TargetDB','$SchemaNameForLog',$ErrorCode,'Error during the CREATE FUNCTION')"
 
                     Invoke-DbaQuery -SqlInstance $LogInstance -Database $LogDatabase -Query $logQuery
 
@@ -2912,7 +3017,7 @@ if($viewsSource.Count -ne 0){
 
  
 
-        $cleanedScript
+       
 
         if (!$WhatIf) {
 
@@ -2962,7 +3067,7 @@ if($viewsSource.Count -ne 0){
 
                     $logQuery = "INSERT INTO dbo.RestoreSchemaLog (RestoreId,RestoreStartDatetime,RestoreEndDatetime,SourceDB,TargetDB,SchemaName,ErrorCode,Message)
 
-                    VALUES ($RestoreId,'$RestoreStartDatetime','$RestoreEndDatetime','$SourceDB','$TargetDB','$SchemaName',$ErrorCode,'Error during the CREATE VIEW')"
+                    VALUES ($RestoreId,'$RestoreStartDatetime','$RestoreEndDatetime','$SourceDB','$TargetDB','$SchemaNameForLog',$ErrorCode,'Error during the CREATE VIEW')"
 
                     Invoke-DbaQuery -SqlInstance $LogInstance -Database $LogDatabase -Query $logQuery
 
@@ -3128,7 +3233,7 @@ if($ErrorCode -eq 1 -and !$ContinueOnError){
 
     $logQuery = "INSERT INTO dbo.RestoreSchemaLog (RestoreId,RestoreStartDatetime,RestoreEndDatetime,SourceDB,TargetDB,SchemaName,ErrorCode,Message)
 
-    VALUES ($RestoreId,'$RestoreStartDatetime','$RestoreEndDatetime','$SourceDB','$TargetDB','$SchemaName',$ErrorCode,'Error during the DROP PROCEDURE')"
+    VALUES ($RestoreId,'$RestoreStartDatetime','$RestoreEndDatetime','$SourceDB','$TargetDB','$SchemaNameForLog',$ErrorCode,'Error during the DROP PROCEDURE')"
 
     Invoke-DbaQuery -SqlInstance $LogInstance -Database $LogDatabase -Query $logQuery
 
@@ -3336,7 +3441,7 @@ if($ErrorCode -eq 1 -and !$ContinueOnError){
 
     $logQuery = "INSERT INTO dbo.RestoreSchemaLog (RestoreId,RestoreStartDatetime,RestoreEndDatetime,SourceDB,TargetDB,SchemaName,ErrorCode,Message)
 
-    VALUES ($RestoreId,'$RestoreStartDatetime','$RestoreEndDatetime','$SourceDB','$TargetDB','$SchemaName',$ErrorCode,'Error during the CREATE PROCEDURE')"
+    VALUES ($RestoreId,'$RestoreStartDatetime','$RestoreEndDatetime','$SourceDB','$TargetDB','$SchemaNameForLog',$ErrorCode,'Error during the CREATE PROCEDURE')"
 
     Invoke-DbaQuery -SqlInstance $LogInstance -Database $LogDatabase -Query $logQuery
 
@@ -3369,9 +3474,167 @@ else{
  
 
 #############################################################################################
+## DROP SYNONYMS
+#############################################################################################
+Write-Log -Level INFO -Message "STEP : DROP SYNONYMS"
+$ErrorCodeDropSynonym = 0
+$startStep = Get-Date
 
+# Retrieve synonyms from target schema
+$synonymsTarget = Invoke-DbaQuery -SqlInstance $SqlInstance -Database $TargetDB -Query @"
+SELECT 
+    s.name AS SchemaName,
+    syn.name AS SynonymName
+FROM sys.synonyms syn
+JOIN sys.schemas s ON s.schema_id = syn.schema_id
+WHERE s.name = '$SchemaName'
+ORDER BY syn.name
+"@
+
+Write-Log -Level INFO -Message ("Found {0} synonyms to drop in target schema '{1}'." -f $synonymsTarget.Count, $SchemaName)
+
+# Process synonyms sequentially (no parallel processing as requested)
+foreach ($synonym in $synonymsTarget) {
+    $synSchema = $synonym.SchemaName
+    $synName = $synonym.SynonymName
+    $qualifiedName = "[$synSchema].[$synName]"
+    
+    $dropQuery = "IF OBJECT_ID(N'$qualifiedName', N'SN') IS NOT NULL DROP SYNONYM $qualifiedName;"
+    $dropQueryLog = $dropQuery.Replace("'", "''") -replace "`r`n", " " -replace "`n", " " -replace "`r", " "
+    
+    Write-Log -Level DEBUG -Message "Dropping synonym $qualifiedName"
+    
+    if (!$WhatIf) {
+        try {
+            Invoke-DbaQuery -SqlInstance $SqlInstance -Database $TargetDB -Query $dropQuery -EnableException
+            
+            $logQuery = @"
+INSERT INTO dbo.RestoreSchemaLogDetail (RestoreId, Step, ObjectType, ObjectSchema, ObjectName, Action, Command, ErrorCode, Message, LogDate)
+VALUES ($RestoreId, 'DROP SYNONYM', 'SYNONYM', '$synSchema', '$synName', 'DROP', '$dropQueryLog', 0, 'Success', GETDATE())
+"@
+            Invoke-DbaQuery -SqlInstance $LogInstance -Database $LogDatabase -Query $logQuery
+        } catch {
+            $errorMsg = $_.Exception.Message.Replace("'", "''")
+            
+            $logQuery = @"
+INSERT INTO dbo.RestoreSchemaLogDetail (RestoreId, Step, ObjectType, ObjectSchema, ObjectName, Action, Command, ErrorCode, Message, LogDate)
+VALUES ($RestoreId, 'DROP SYNONYM', 'SYNONYM', '$synSchema', '$synName', 'DROP', '$dropQueryLog', 1, '$errorMsg', GETDATE())
+"@
+            Invoke-DbaQuery -SqlInstance $LogInstance -Database $LogDatabase -Query $logQuery
+            
+            Write-Log -Level ERROR -Message "Failed to drop synonym $qualifiedName : $errorMsg"
+            $ErrorCode = 1
+            $ErrorCodeDropSynonym = 1
+        }
+    } else {
+        Write-Log -Level INFO -Message "[WhatIf] Would run: $dropQuery"
+    }
+}
+
+if ($ErrorCode -eq 1 -and !$ContinueOnError) {
+    $end = Get-Date
+    $RestoreEndDatetime = $end.ToString("yyyy-MM-dd HH:mm:ss")
+    $logQuery = "INSERT INTO dbo.RestoreSchemaLog (RestoreId,RestoreStartDatetime,RestoreEndDatetime,SourceDB,TargetDB,SchemaName,ErrorCode,Message)
+    VALUES ($RestoreId,'$RestoreStartDatetime','$RestoreEndDatetime','$SourceDB','$TargetDB','$SchemaNameForLog',$ErrorCode,'Error during the DROP SYNONYM')"
+    Invoke-DbaQuery -SqlInstance $LogInstance -Database $LogDatabase -Query $logQuery
+    return
+}
+
+$endStep = Get-Date
+$durationInSeconds = ($endStep - $startStep).TotalSeconds
+$roundedDuration = [math]::Round($durationInSeconds, 2)
+
+if ($ErrorCodeDropSynonym -eq 1) {
+    Write-Log -Level ERROR -Message "STEP : DROP SYNONYMS in $roundedDuration seconds | FAILED"
+} else {
+    Write-Log -Level INFO -Message "STEP : DROP SYNONYMS in $roundedDuration seconds | SUCCEED"
+}
+
+ 
+
+#############################################################################################
+## CREATE SYNONYMS
+#############################################################################################
+Write-Log -Level INFO -Message "STEP : CREATE SYNONYMS"
+$ErrorCodeCreateSynonym = 0
+$startStep = Get-Date
+
+# Retrieve synonyms from source schema
+$synonymsSource = Invoke-DbaQuery -SqlInstance $SqlInstance -Database $SourceDB -Query @"
+SELECT 
+    s.name AS SchemaName,
+    syn.name AS SynonymName,
+    syn.base_object_name AS BaseObject
+FROM sys.synonyms syn
+JOIN sys.schemas s ON s.schema_id = syn.schema_id
+WHERE s.name = '$SchemaName'
+ORDER BY syn.name
+"@
+
+Write-Log -Level INFO -Message ("Found {0} synonyms to create from source schema '{1}'." -f $synonymsSource.Count, $SchemaName)
+
+# Process synonyms sequentially (no parallel processing as requested)
+foreach ($synonym in $synonymsSource) {
+    $synSchema = $synonym.SchemaName
+    $synName = $synonym.SynonymName
+    $baseObject = $synonym.BaseObject
+    $qualifiedName = "[$synSchema].[$synName]"
+    
+    $createQuery = "CREATE SYNONYM $qualifiedName FOR $baseObject;"
+    $createQueryLog = $createQuery.Replace("'", "''") -replace "`r`n", " " -replace "`n", " " -replace "`r", " "
+    
+    Write-Log -Level DEBUG -Message "Creating synonym $qualifiedName -> $baseObject"
+    
+    if (!$WhatIf) {
+        try {
+            Invoke-DbaQuery -SqlInstance $SqlInstance -Database $TargetDB -Query $createQuery -EnableException
+            
+            $logQuery = @"
+INSERT INTO dbo.RestoreSchemaLogDetail (RestoreId, Step, ObjectType, ObjectSchema, ObjectName, Action, Command, ErrorCode, Message, LogDate)
+VALUES ($RestoreId, 'CREATE SYNONYM', 'SYNONYM', '$synSchema', '$synName', 'CREATE', '$createQueryLog', 0, 'Success', GETDATE())
+"@
+            Invoke-DbaQuery -SqlInstance $LogInstance -Database $LogDatabase -Query $logQuery
+        } catch {
+            $errorMsg = $_.Exception.Message.Replace("'", "''")
+            
+            $logQuery = @"
+INSERT INTO dbo.RestoreSchemaLogDetail (RestoreId, Step, ObjectType, ObjectSchema, ObjectName, Action, Command, ErrorCode, Message, LogDate)
+VALUES ($RestoreId, 'CREATE SYNONYM', 'SYNONYM', '$synSchema', '$synName', 'CREATE', '$createQueryLog', 1, '$errorMsg', GETDATE())
+"@
+            Invoke-DbaQuery -SqlInstance $LogInstance -Database $LogDatabase -Query $logQuery
+            
+            Write-Log -Level ERROR -Message "Failed to create synonym $qualifiedName : $errorMsg"
+            $ErrorCode = 1
+            $ErrorCodeCreateSynonym = 1
+        }
+    } else {
+        Write-Log -Level INFO -Message "[WhatIf] Would run: $createQuery"
+    }
+}
+
+if ($ErrorCode -eq 1 -and !$ContinueOnError) {
+    $end = Get-Date
+    $RestoreEndDatetime = $end.ToString("yyyy-MM-dd HH:mm:ss")
+    $logQuery = "INSERT INTO dbo.RestoreSchemaLog (RestoreId,RestoreStartDatetime,RestoreEndDatetime,SourceDB,TargetDB,SchemaName,ErrorCode,Message)
+    VALUES ($RestoreId,'$RestoreStartDatetime','$RestoreEndDatetime','$SourceDB','$TargetDB','$SchemaNameForLog',$ErrorCode,'Error during the CREATE SYNONYM')"
+    Invoke-DbaQuery -SqlInstance $LogInstance -Database $LogDatabase -Query $logQuery
+    return
+}
+
+$endStep = Get-Date
+$durationInSeconds = ($endStep - $startStep).TotalSeconds
+$roundedDuration = [math]::Round($durationInSeconds, 2)
+
+if ($ErrorCodeCreateSynonym -eq 1) {
+    Write-Log -Level ERROR -Message "STEP : CREATE SYNONYMS in $roundedDuration seconds | FAILED"
+} else {
+    Write-Log -Level INFO -Message "STEP : CREATE SYNONYMS in $roundedDuration seconds | SUCCEED"
+}
+
+ 
+
+#############################################################################################
 ## LOG TABLE
-
 #############################################################################################
 
  
@@ -3388,7 +3651,7 @@ if(!$WhatIf){
 
     if($ErrorCode -eq 1){
 
-        Write-Log -Level ERROR -Message "RESTORE SCHEMA FAILED in total time $roundedDuration seconds"
+        Write-Log -Level ERROR -Message "RESTORE SCHEMA [$SchemaNameForLog] FAILED in total time $roundedDuration seconds"
 
         $message = "Fail schema restore"
 
@@ -3396,7 +3659,7 @@ if(!$WhatIf){
 
     else{
 
-        Write-Log -Level INFO -Message "RESTORE SCHEMA SUCCEED in total time $roundedDuration seconds"
+        Write-Log -Level INFO -Message "RESTORE SCHEMA [$SchemaNameForLog] SUCCEED in total time $roundedDuration seconds"
 
         $message = "Success schema restore"
 
@@ -3406,8 +3669,19 @@ if(!$WhatIf){
 
     $logQuery = "INSERT INTO dbo.RestoreSchemaLog (RestoreId,RestoreStartDatetime,RestoreEndDatetime,SourceDB,TargetDB,SchemaName,ErrorCode,Message)
 
-    VALUES ($RestoreId,'$RestoreStartDatetime','$RestoreEndDatetime','$SourceDB','$TargetDB','$SchemaName',$ErrorCode,'$message')"
+    VALUES ($RestoreId,'$RestoreStartDatetime','$RestoreEndDatetime','$SourceDB','$TargetDB','$SchemaNameForLog',$ErrorCode,'$message')"
 
     Invoke-DbaQuery -SqlInstance $LogInstance -Database $LogDatabase -Query $logQuery
 
 }
+
+ 
+
+# END OF MAIN LOOP - foreach schema
+}
+
+ 
+
+Write-Log -Level INFO -Message "============================================================"
+Write-Log -Level INFO -Message "ALL SCHEMAS PROCESSED SUCCESSFULLY"
+Write-Log -Level INFO -Message "============================================================"

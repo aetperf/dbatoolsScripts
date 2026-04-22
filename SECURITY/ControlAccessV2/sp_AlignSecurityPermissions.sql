@@ -2,7 +2,7 @@ USE [DBATOOLS]
 
 GO
 
-/****** Object:  StoredProcedure [security].[AlignSecurityPermissions]    Script Date: 08/12/2025 10:11:49 ******/
+/****** Object:  StoredProcedure [security].[sp_AlignSecurityPermissions]    Script Date: 03/02/2026 15:14:50 ******/
 
 SET ANSI_NULLS ON
 
@@ -14,7 +14,9 @@ GO
 
  
 
-CREATE   PROCEDURE [security].[sp_AlignSecurityPermissions]
+ 
+
+ALTER   PROCEDURE [security].[sp_AlignSecurityPermissions]
 
     @IgnoreRoles NVARCHAR(MAX) = NULL,       -- Liste de patterns de rôles à ignorer
 
@@ -198,7 +200,9 @@ BEGIN
 
                                           @DatabaseGroupName IS NULL
 
-                                          OR EXISTS(
+                                          OR (
+
+                                                         v.Grantor IS NOT NULL AND EXISTS(
 
                                                          SELECT 1
 
@@ -206,7 +210,11 @@ BEGIN
 
                                                          WHERE d.DatabaseGroupName LIKE REPLACE(s.value, '''', '''''')
 
+                                                         )
+
                                           )
+
+                                          OR (v.Grantor IS NULL AND d.DatabaseGroupName IS NULL)
 
         )
 

@@ -18,6 +18,7 @@
       * LoginsSecurityHistory.Sid = SID du login serveur (format hex 0x... si possible, sinon SidString)
       * LoginsPermissionsHistory.Sid = SID du user de la base (sys.sysusers.sid, stocké en hex 0x...)
     - Insère les résultats dans les tables, avec le nom de l’instance auditée.
+    - (AJOUT) Audite aussi les rôles serveur (instance) via sys.server_role_members
 
 .PARAMETER ServerInstance
     Nom(s) de l'instance SQL Server à auditer (ex: "SRVSQL" ou "SRVSQL\INSTANCE").
@@ -40,15 +41,6 @@
 
 .PARAMETER LogDatabaseName
     Nom de la base de données où créer/stocker les tables de log (par défaut: "DBATOOLS").
-
-.EXAMPLE
-    .\GetSecurityDBState.ps1 -ServerInstance "localhost" -LogDatabaseName "DBATOOLS"
-
-.EXAMPLE
-    .\GetSecurityDBState.ps1 -ServerInstance "SRV1","SRV2\INST2" -LogServer "SRVLOGS" -LogDatabaseName "DBATOOLS"
-
-.EXAMPLE
-    .\GetSecurityDBState.ps1 -CmsServer "SERVERCMS" -CmsGroup "ALL\PRD" -LogServer "SRVLOGS" -LogDatabaseName "DBATOOLS"
 #>
 
 param(
@@ -92,7 +84,6 @@ function Convert-BytesToHexString {
     return $null
 }
 
-
 function Invoke-InstanceSecurityAudit {
     param(
         [Parameter(Mandatory = $true)]
@@ -121,9 +112,7 @@ IF NOT EXISTS (
     WHERE t.name = 'LoginsSecurityHistory' AND s.name = 'security'
 )
 BEGIN
-    IF NOT EXISTS (
-        SELECT 1 FROM sys.schemas WHERE name = 'security'
-    )
+    IF NOT EXISTS (SELECT 1 FROM sys.schemas WHERE name = 'security')
     BEGIN
         EXEC('CREATE SCHEMA [security]')
     END
@@ -165,9 +154,7 @@ IF NOT EXISTS (
     WHERE t.name = 'LoginsPermissionsHistory' AND s.name = 'security'
 )
 BEGIN
-    IF NOT EXISTS (
-        SELECT 1 FROM sys.schemas WHERE name = 'security'
-    )
+    IF NOT EXISTS (SELECT 1 FROM sys.schemas WHERE name = 'security')
     BEGIN
         EXEC('CREATE SCHEMA [security]')
     END
@@ -199,6 +186,34 @@ END;
 
     Invoke-DbaQuery -SqlInstance $InstanceLog -Database $LogDatabaseName -Query $createPermTableSql -ErrorAction Stop
 
+    # ----- (AJOUT) Création table LoginsServerRolesHistory -----
+    $createSrvRolesTableSql = @"
+IF NOT EXISTS (
+    SELECT 1
+    FROM sys.tables t
+    JOIN sys.schemas s ON s.schema_id = t.schema_id
+    WHERE t.name = 'LoginsServerRolesHistory' AND s.name = 'security'
+)
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM sys.schemas WHERE name = 'security')
+    BEGIN
+        EXEC('CREATE SCHEMA [security]')
+    END
+
+    CREATE TABLE [security].[LoginsServerRolesHistory](
+        [Id] INT IDENTITY(1,1) PRIMARY KEY,
+        [InstanceName] NVARCHAR(255) NULL,
+        [LoginName] NVARCHAR(255) NOT NULL,
+        [LoginType] NVARCHAR(255) NULL,
+        [ServerRoleName] NVARCHAR(255) NOT NULL,
+        [Sid] NVARCHAR(200) NULL,
+        [AuditDate] DATETIME NOT NULL DEFAULT (GETDATE())
+    )
+END;
+"@
+
+    Invoke-DbaQuery -SqlInstance $InstanceLog -Database $LogDatabaseName -Query $createSrvRolesTableSql -ErrorAction Stop
+
     # --- Audit des logins (lecture sur InstanceAudit, insert sur InstanceLog) ---
     $logins = Get-DbaLogin -SqlInstance $InstanceAudit
 
@@ -209,8 +224,6 @@ END;
         $memberType = $null
 
         # --- SID du login ---
-        # On tente d'abord d'obtenir un format hex 0x... depuis $login.Sid (byte[]) si dispo,
-        # sinon on garde $login.SidString
         $sidValue = $null
 
         if ($login.PSObject.Properties.Name -contains "Sid" -and $login.Sid) {
@@ -277,6 +290,43 @@ VALUES
 
     Write-Host ">>> Audit des logins terminé pour $InstanceName."
 
+    # ----- (AJOUT) Audit des rôles serveur (instance) -----
+    Write-Host ">>> Audit des rôles serveur (instance) pour $InstanceName..."
+
+    $serverRolesQuery = @"
+SELECT
+    m.name      AS LoginName,
+    m.type_desc AS LoginType,
+    r.name      AS ServerRoleName,
+    CONVERT(varchar(200), m.sid, 1) AS SidHex
+FROM sys.server_role_members rm
+JOIN sys.server_principals r ON r.principal_id = rm.role_principal_id
+JOIN sys.server_principals m ON m.principal_id = rm.member_principal_id
+WHERE m.type IN ('S','U','G')
+  AND m.name NOT LIKE '##%';
+"@
+
+    $serverRoles = Invoke-DbaQuery -SqlInstance $InstanceAudit -Database "master" -Query $serverRolesQuery -ErrorAction Stop
+
+    foreach ($row in $serverRoles) {
+        $loginNameSql = $row.LoginName.Replace("'", "''")
+        $loginTypeSql = ("" + $row.LoginType).Replace("'", "''")
+        $roleNameSql  = $row.ServerRoleName.Replace("'", "''")
+
+        $sidSql = if ($row.SidHex) { "'" + $row.SidHex.Replace("'", "''") + "'" } else { "NULL" }
+
+
+        $insertSrvRoleSql = @"
+INSERT INTO [security].[LoginsServerRolesHistory]
+(InstanceName, LoginName, LoginType, ServerRoleName, Sid, AuditDate)
+VALUES
+('$InstanceNameSql', '$loginNameSql', '$loginTypeSql', '$roleNameSql', $sidSql, '$AuditDateSql');
+"@
+        Invoke-DbaQuery -SqlInstance $InstanceLog -Database $LogDatabaseName -Query $insertSrvRoleSql -ErrorAction Stop
+    }
+
+    Write-Host ">>> Audit des rôles serveur terminé pour $InstanceName."
+
     # --- Audit des permissions ---
     $databases = Get-DbaDatabase -SqlInstance $InstanceAudit | Where-Object { -not $_.IsSystemObject }
 
@@ -284,8 +334,6 @@ VALUES
 
         Write-Host "Analyse des permissions sur la base $($db.Name) de l’instance $InstanceName..."
 
-        # 1) On lit les permissions SUR L'INSTANCE AUDITÉE dans la base cible
-        # + ajout de u.sid AS Sid
         $permQuery = @"
 SELECT
     dp.name       AS LoginName,
@@ -295,7 +343,7 @@ SELECT
 FROM sys.database_principals dp
 JOIN sys.sysusers u
     ON u.uid = dp.principal_id
-JOIN sys.database_role_members drm     
+JOIN sys.database_role_members drm
     ON dp.principal_id = drm.member_principal_id
 JOIN sys.database_principals r
     ON drm.role_principal_id = r.principal_id
@@ -306,9 +354,7 @@ WHERE
 
         $permResults = Invoke-DbaQuery -SqlInstance $InstanceAudit -Database $db.Name -Query $permQuery -ErrorAction Stop
 
-        if (-not $permResults) {
-            continue
-        }
+        if (-not $permResults) { continue }
 
         foreach ($row in $permResults) {
             $dbNameSql     = $db.Name.Replace("'", "''")
@@ -332,7 +378,6 @@ WHERE
                 $hasDbAccessVal = "0"
             }
 
-            # SID user de la base : souvent byte[] en PowerShell -> on le convertit en "0x..."
             $sidHex = Convert-BytesToHexString $row.Sid
             $sidPermSqlValue = if ($sidHex) { "'" + $sidHex.Replace("'", "''") + "'" } else { "NULL" }
 
