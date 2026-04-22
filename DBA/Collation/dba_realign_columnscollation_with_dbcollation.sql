@@ -1,3 +1,91 @@
+/*
+================================================================================
+  PROCEDURE : dbo.dba_realign_columnscollation_with_dbcollation
+================================================================================
+  AUTHOR     : DBA Team
+  CREATED    : 2026-04-22
+--------------------------------------------------------------------------------
+  VERSION HISTORY
+  ---------------
+  v1.0  2026-04-22  Initial release.
+--------------------------------------------------------------------------------
+  DESCRIPTION
+  -----------
+  Realigns the collation of all character columns (char, varchar, nchar,
+  nvarchar, text, ntext) that differ from the current database collation.
+
+  For each candidate column the procedure:
+    1. Identifies columns whose collation does not match the DB collation.
+    2. Applies optional include / exclude filters on tables and columns.
+    3. Detects structural dependencies (indexes, PK, UQ, FK, DEFAULT, CHECK)
+       and marks the column as SKIPPED_DEPENDENCY when any are found, together
+       with ready-to-use DROP / CREATE scripts.
+    4. Skips computed columns, identity columns, and deprecated text / ntext
+       types (marked SKIPPED_UNSUPPORTED).
+    5. Executes the ALTER COLUMN … COLLATE statement when @Execute = 1,
+       or produces a preview of the SQL when @Execute = 0.
+
+  Returns four result sets:
+    #1  Summary   : counts by status (SUCCESS, FAILED, SKIPPED_*, PREVIEW).
+    #2  Details   : per-column result with executed SQL and error messages.
+    #3  Warnings  : dependency warnings with DROP / CREATE helper scripts.
+    #4  Candidates: full candidate list with current/target collation and status.
+--------------------------------------------------------------------------------
+  PARAMETERS
+  ----------
+  @Execute        bit           (default 0)
+      0 = preview mode – no changes applied.
+      1 = execute mode – ALTER COLUMN statements are run.
+
+  @Debug          bit           (default 0)
+      1 = print diagnostic messages to the output window.
+
+  @IncludeTables  nvarchar(max) (default NULL = all tables)
+      Comma-separated list of table patterns to include.
+      Supports schema-qualified names and LIKE wildcards.
+      Examples: 'dbo.Customer', 'sales.%', '%.Audit%'
+
+  @ExcludeTables  nvarchar(max) (default NULL = no exclusion)
+      Comma-separated list of table patterns to exclude.
+      Examples: 'dbo.Log%', '%.tmp_%'
+
+  @IncludeColumns nvarchar(max) (default NULL = all columns)
+      Comma-separated list of column patterns to include.
+      Supports column name, table.column, or schema.table.column.
+      Examples: 'Name', 'Code', '%.Description', 'dbo.Customer.Name'
+
+  @ExcludeColumns nvarchar(max) (default NULL = no exclusion)
+      Comma-separated list of column patterns to exclude.
+      Examples: '%_backup', 'Legacy%'
+--------------------------------------------------------------------------------
+  USAGE
+  -----
+  -- Preview all columns that need realignment (no changes applied)
+  EXEC dbo.dba_realign_columnscollation_with_dbcollation;
+
+  -- Preview with debug output
+  EXEC dbo.dba_realign_columnscollation_with_dbcollation
+      @Debug = 1;
+
+  -- Execute realignment on all eligible columns
+  EXEC dbo.dba_realign_columnscollation_with_dbcollation
+      @Execute = 1;
+
+  -- Preview only for specific tables
+  EXEC dbo.dba_realign_columnscollation_with_dbcollation
+      @IncludeTables = 'dbo.Customer, sales.%';
+
+  -- Execute excluding staging / log tables
+  EXEC dbo.dba_realign_columnscollation_with_dbcollation
+      @Execute       = 1,
+      @ExcludeTables = 'dbo.stg_%,dbo.Log%';
+
+  -- Execute on specific columns only
+  EXEC dbo.dba_realign_columnscollation_with_dbcollation
+      @Execute        = 1,
+      @IncludeColumns = 'Name, Description, %.Code';
+================================================================================
+*/
 CREATE OR ALTER PROCEDURE dbo.dba_realign_columnscollation_with_dbcollation
 (
       @Execute         bit           = 0
