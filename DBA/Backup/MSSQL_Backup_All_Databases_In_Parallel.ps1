@@ -294,6 +294,23 @@
             $RetentionDate = (Get-Date).AddHours(-$CleanupTime)
             Write-Host "Cleanup         : *.${BackupExtension} files older than ${RetentionDate} (${CleanupTime}h retention)" -ForegroundColor Yellow
             Write-Host "Cleanup When    : $CleanupWhen" -ForegroundColor Yellow
+            Write-Host ""
+            if (Test-Path $BackupDirectory) {
+                $filesToDelete = Get-ChildItem -Path $BackupDirectory -Recurse -File -Filter "*.${BackupExtension}" |
+                    Where-Object { $_.LastWriteTime -lt $RetentionDate }
+                if ($filesToDelete.Count -gt 0) {
+                    $totalSizeMB = [math]::Round(($filesToDelete | Measure-Object -Property Length -Sum).Sum / 1MB, 2)
+                    Write-Host "Files that would be deleted ($($filesToDelete.Count) files, ${totalSizeMB} MB):" -ForegroundColor Red
+                    $filesToDelete | Group-Object { $_.Directory.Parent.Parent.Name } | Sort-Object Name | ForEach-Object {
+                        $dbSizeMB = [math]::Round(($_.Group | Measure-Object -Property Length -Sum).Sum / 1MB, 2)
+                        Write-Host "  - $($_.Name) : $($_.Count) file(s), ${dbSizeMB} MB" -ForegroundColor DarkRed
+                    }
+                } else {
+                    Write-Host "No files would be deleted (no *.${BackupExtension} files older than ${RetentionDate})" -ForegroundColor DarkGray
+                }
+            } else {
+                Write-Host "Backup directory does not exist yet, no files to clean up" -ForegroundColor DarkGray
+            }
         } else {
             Write-Host "Cleanup         : Disabled" -ForegroundColor DarkGray
         }
