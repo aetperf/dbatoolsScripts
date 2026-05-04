@@ -387,10 +387,12 @@
                     ReplaceInName   = $true
                     CreateFolder    = $true
                     EnableException = $true
+                    NoAppendDbNameInPath = $true
+                    
                 }
                 if ($VerifyFlag) { $BackupParams['Verify'] = $true }
 
-                $resbackup = Backup-DbaDatabase @BackupParams -WarningVariable WarningVariable
+                $resbackup = Backup-DbaDatabase @BackupParams -WarningVariable WarningVariable 
                 
                 # Add result to ConcurrentDictionary for logging and return
                 $silentres = $ResultsDict.TryAdd($Database,$resbackup)
