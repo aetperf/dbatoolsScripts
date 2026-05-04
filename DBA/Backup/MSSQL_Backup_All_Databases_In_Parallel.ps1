@@ -7,6 +7,7 @@
         "${BackupDirectory}\servername\instancename\dbname\backuptype\servername_dbname_backuptype_timestamp.${BackupExtension}"
         
         Supports:
+        - Inclusion of databases by exact name or SQL LIKE patterns (e.g. PROD%, %_CRITICAL)
         - Exclusion of databases by exact name or SQL LIKE patterns (e.g. %_NOBACKUP, TEST%)
         - Automatic cleanup of old backup files (only files matching the backup extension)
         - Cleanup can run Before, After or Both, and skips databases whose backup failed
@@ -20,6 +21,12 @@
 
     .PARAMETER BackupDirectory
         Target root directory
+
+    .PARAMETER IncludeDatabases
+        Array of database names or SQL LIKE patterns to include.
+        If specified, ONLY databases matching these patterns will be backed up.
+        Exact names (e.g. "MyDB") and patterns using % and _ wildcards are supported.
+        Example: @("PROD%", "MyDB", "%_CRITICAL")
 
     .PARAMETER ExcludeDatabases
         Array of database names or SQL LIKE patterns to exclude.
@@ -82,6 +89,7 @@
         [Parameter(Mandatory)] [string] $SqlInstance,
         [Parameter(Mandatory)] [ValidateSet('Full','Diff','Log')] [string] $BackupType,
         [Parameter(Mandatory)] [string] $BackupDirectory,
+        [Parameter()] [string[]] $IncludeDatabases = @(),
         [Parameter()] [string[]] $ExcludeDatabases = @(),
         [Parameter()] [Int16] $Degree = 4,
         [Parameter()] [Int16] $FileCount = 4,
@@ -211,6 +219,7 @@
     Write-Log -Level INFO -Message "Parameter SQLInstance : ${SqlInstance}"
     Write-Log -Level INFO -Message "Parameter BackupType : ${BackupType}"
     Write-Log -Level INFO -Message "Parameter BackupDirectory : ${BackupDirectory}"
+    Write-Log -Level INFO -Message "Parameter IncludeDatabases : $($IncludeDatabases -join ', ')"
     Write-Log -Level INFO -Message "Parameter ExcludeDatabases : $($ExcludeDatabases -join ', ')"
     Write-Log -Level INFO -Message "Parameter Degree : ${Degree}"
     Write-Log -Level INFO -Message "Parameter FileCount : ${FileCount}"
@@ -232,6 +241,10 @@
     $ExactExclusions = $SystemExclusions + ($ExcludeDatabases | Where-Object { $_ -notmatch '[%_]' })
     $LikePatterns = @($ExcludeDatabases | Where-Object { $_ -match '[%_]' })
 
+    # Separate IncludeDatabases into exact names and LIKE patterns
+    $IncludeExact = @($IncludeDatabases | Where-Object { $_ -notmatch '[%_]' })
+    $IncludeLikePatterns = @($IncludeDatabases | Where-Object { $_ -match '[%_]' })
+
     switch ( $BackupType ) 
         {
             "Full" 
@@ -251,6 +264,19 @@
                 }
     
         }
+
+    # Apply IncludeDatabases filter (exact names + LIKE patterns)
+    if ($IncludeDatabases.Count -gt 0) {
+        $beforeCount = $Databases.Count
+        $Databases = $Databases | Where-Object {
+            $dbName = $_.Name
+            # Match if exact name is in the include list OR matches any include LIKE pattern
+            ($IncludeExact -icontains $dbName) -or
+            ($IncludeLikePatterns.Count -gt 0 -and (Test-DatabaseExcluded -DatabaseName $dbName -ExcludePatterns $IncludeLikePatterns))
+        }
+        $includedByFilter = $Databases.Count
+        Write-Log -Level INFO -Message "Included ${includedByFilter} database(s) from ${beforeCount} by IncludeDatabases filter: $($IncludeDatabases -join ', ')"
+    }
 
     # Apply SQL LIKE pattern exclusions
     if ($LikePatterns.Count -gt 0) {
@@ -279,6 +305,9 @@
         Write-Host "Verify          : $Verify" -ForegroundColor White
         Write-Host "Timeout         : $Timeout seconds" -ForegroundColor White
         Write-Host ""
+        if ($IncludeDatabases.Count -gt 0) {
+            Write-Host "Included patterns: $($IncludeDatabases -join ', ')" -ForegroundColor Green
+        }
         if ($ExcludeDatabases.Count -gt 0) {
             Write-Host "Excluded patterns: $($ExcludeDatabases -join ', ')" -ForegroundColor Yellow
         }
