@@ -63,7 +63,6 @@
         Dependencies : 
             Install-Module Logging
             Install-Module dbatools
-            Install-Module JoinModule
 
         Compatibility : Powershell 7.3+
 
