@@ -145,40 +145,49 @@
         <#
         .SYNOPSIS
             Removes old backup files from the backup directory based on retention period.
-            Only deletes files matching the backup extension for the current backup type.
-            Restricts cleanup to the current backup type subfolder to avoid deleting
-            Full backups during a Diff run (both use .bak).
+            Deletes all backup files (*.bak and *.trn) regardless of backup type.
+            Restricts cleanup to the current instance subfolder to avoid deleting
+            backups from other instances sharing the same root directory.
             Skips databases listed in SkipDatabases (e.g. failed backups).
         #>
         param(
             [string]$BackupDirectory,
-            [string]$BackupExtension,
-            [string]$BackupType,
+            [string]$SqlInstance,
             [int]$CleanupTime,
             [string[]]$SkipDatabases = @()
         )
 
         if ($CleanupTime -le 0) { return }
 
-        $RetentionDate = (Get-Date).AddHours(-$CleanupTime)
-        Write-Log -Level INFO -Message "Cleanup: removing *.${BackupExtension} files older than ${RetentionDate} from ${BackupDirectory} (type: ${BackupType})"
+        # Derive instance subfolder from SqlInstance (e.g. "MyServer\INST01" -> "MyServer\INST01", "MyServer" -> "MyServer\MyServer")
+        $instanceParts = $SqlInstance -split '\\'
+        $serverName = $instanceParts[0]
+        $instanceName = if ($instanceParts.Count -gt 1) { $instanceParts[1] } else { $serverName }
+        $instanceSubPath = Join-Path -Path $BackupDirectory -ChildPath (Join-Path -Path $serverName -ChildPath $instanceName)
 
-        if (-not (Test-Path $BackupDirectory)) {
-            Write-Log -Level INFO -Message "Cleanup: backup directory ${BackupDirectory} does not exist, skipping"
+        $RetentionDate = (Get-Date).AddHours(-$CleanupTime)
+        Write-Log -Level INFO -Message "Cleanup: removing backup files older than ${RetentionDate} from ${instanceSubPath}"
+
+        if (-not (Test-Path $instanceSubPath)) {
+            Write-Log -Level INFO -Message "Cleanup: instance directory ${instanceSubPath} does not exist, skipping"
             return
         }
 
-        # Find backup files matching the extension recursively, restricted to the current BackupType subfolder
-        $oldFiles = Get-ChildItem -Path $BackupDirectory -Recurse -File -Filter "*.${BackupExtension}" |
-            Where-Object { $_.LastWriteTime -lt $RetentionDate -and $_.FullName -ilike "*\${BackupType}\*" }
+        # Find all backup files (*.bak and *.trn) recursively within the instance subfolder
+        $oldFiles = Get-ChildItem -Path $instanceSubPath -Recurse -File -Include "*.bak","*.trn" |
+            Where-Object { $_.LastWriteTime -lt $RetentionDate }
 
         $deletedCount = 0
         $skippedCount = 0
         foreach ($file in $oldFiles) {
-            # Check if this file belongs to a skipped database (by checking if any skip db name is in the path)
+            # Check if this file belongs to a skipped database by extracting the database folder
+            # from the known path structure: BackupDirectory\servername\instancename\dbname\backuptype\file
             $shouldSkip = $false
+            $backupTypeFolder = Split-Path -Path $file.FullName -Parent
+            $databaseFolderPath = if ($backupTypeFolder) { Split-Path -Path $backupTypeFolder -Parent } else { $null }
+            $databaseFolderName = if ($databaseFolderPath) { Split-Path -Path $databaseFolderPath -Leaf } else { $null }
             foreach ($skipDb in $SkipDatabases) {
-                if ($file.FullName -ilike "*\${skipDb}\*") {
+                if ($databaseFolderName -and $databaseFolderName -ieq $skipDb) {
                     $shouldSkip = $true
                     break
                 }
@@ -353,8 +362,7 @@
     # Run pre-backup cleanup if configured
     if ($CleanupWhen -in @('Before','Both') -and $CleanupTime -gt 0) {
         Write-Log -Level INFO -Message "Running pre-backup cleanup..."
-        Invoke-BackupCleanup -BackupDirectory $BackupDirectory -BackupExtension $BackupExtension `
-            -BackupType $BackupType -CleanupTime $CleanupTime
+        Invoke-BackupCleanup -BackupDirectory $BackupDirectory -SqlInstance $SqlInstance -CleanupTime $CleanupTime
     }
 
     # A concurrent dictionnary to manage log and returns from parallel backups
@@ -458,8 +466,8 @@
         if ($CleanupWhen -in @('After','Both') -and $CleanupTime -gt 0) {
             $FailedDbNames = @($DatabasesBackupProblems | ForEach-Object { $_.Database })
             Write-Log -Level INFO -Message "Running post-backup cleanup..."
-            Invoke-BackupCleanup -BackupDirectory $BackupDirectory -BackupExtension $BackupExtension `
-                -BackupType $BackupType -CleanupTime $CleanupTime -SkipDatabases $FailedDbNames
+            Invoke-BackupCleanup -BackupDirectory $BackupDirectory -SqlInstance $SqlInstance `
+                -CleanupTime $CleanupTime -SkipDatabases $FailedDbNames
         }
 
         # change Return Code if at least one backup had a problem
