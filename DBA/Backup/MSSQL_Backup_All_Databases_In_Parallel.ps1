@@ -45,8 +45,8 @@
         Timeout of one backup (not the whole timeout)
         Default 3600 seconds   
 
-    .PARAMETER Verify
-        Verify backup integrity after completion. Enabled by default.
+    .PARAMETER NoVerify
+        Skip backup integrity verification. By default, verification is always performed.
 
     .PARAMETER CleanupTime
         Retention period in hours. Backup files older than this will be deleted.
@@ -94,7 +94,7 @@
         [Parameter()] [Int16] $Degree = 4,
         [Parameter()] [Int16] $FileCount = 4,
         [Parameter()] [Int16] $Timeout = 3600,
-        [Parameter()] [switch] $Verify = $true,
+        [Parameter()] [switch] $NoVerify,
         [Parameter()] [Int32] $CleanupTime = 0,
         [Parameter()] [ValidateSet('Before','After','Both')] [string] $CleanupWhen = 'After',
         [Parameter()] [switch] $WhatIf,
@@ -224,7 +224,7 @@
     Write-Log -Level INFO -Message "Parameter Degree : ${Degree}"
     Write-Log -Level INFO -Message "Parameter FileCount : ${FileCount}"
     Write-Log -Level INFO -Message "Parameter Timeout : ${Timeout}"
-    Write-Log -Level INFO -Message "Parameter Verify : ${Verify}"
+    Write-Log -Level INFO -Message "Parameter NoVerify : ${NoVerify}"
     Write-Log -Level INFO -Message "Parameter CleanupTime : ${CleanupTime} hours"
     Write-Log -Level INFO -Message "Parameter CleanupWhen : ${CleanupWhen}"
     
@@ -302,7 +302,7 @@
         Write-Host "File Extension  : .$BackupExtension" -ForegroundColor White
         Write-Host "FileCount       : $FileCount" -ForegroundColor White
         Write-Host "Degree          : $Degree" -ForegroundColor White
-        Write-Host "Verify          : $Verify" -ForegroundColor White
+        Write-Host "Verify          : $(-not $NoVerify)" -ForegroundColor White
         Write-Host "Timeout         : $Timeout seconds" -ForegroundColor White
         Write-Host ""
         if ($IncludeDatabases.Count -gt 0) {
@@ -370,7 +370,7 @@
         $FileCount=$using:FileCount
         $BackupType=$using:BackupType
         $BackupExtension=$using:BackupExtension
-        $VerifyFlag=$using:Verify
+        $NoVerifyFlag=$using:NoVerify
     
         try {   
                 # Build backup parameters via splatting
@@ -390,7 +390,7 @@
                     NoAppendDbNameInPath = $true
                     
                 }
-                if ($VerifyFlag) { $BackupParams['Verify'] = $true }
+                if (-not $NoVerifyFlag) { $BackupParams['Verify'] = $true }
 
                 $resbackup = Backup-DbaDatabase @BackupParams -WarningVariable WarningVariable 
                 
