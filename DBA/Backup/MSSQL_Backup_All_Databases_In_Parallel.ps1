@@ -118,16 +118,16 @@
         return "^${escaped}$"
     }
 
-    function Test-DatabaseExcluded {
+    function Test-DatabaseMatchesPattern {
         <#
         .SYNOPSIS
-            Tests if a database name matches any of the exclusion patterns (exact name or SQL LIKE pattern)
+            Tests if a database name matches any of the given patterns (exact name or SQL LIKE pattern)
         #>
         param(
             [string]$DatabaseName,
-            [string[]]$ExcludePatterns
+            [string[]]$Patterns
         )
-        foreach ($pattern in $ExcludePatterns) {
+        foreach ($pattern in $Patterns) {
             if ($pattern -match '[%_]') {
                 # SQL LIKE pattern: convert to regex
                 $regex = Convert-SqlLikeToRegex -Pattern $pattern
@@ -272,7 +272,7 @@
             $dbName = $_.Name
             # Match if exact name is in the include list OR matches any include LIKE pattern
             ($IncludeExact -icontains $dbName) -or
-            ($IncludeLikePatterns.Count -gt 0 -and (Test-DatabaseExcluded -DatabaseName $dbName -ExcludePatterns $IncludeLikePatterns))
+            ($IncludeLikePatterns.Count -gt 0 -and (Test-DatabaseMatchesPattern -DatabaseName $dbName -Patterns $IncludeLikePatterns))
         }
         $includedByFilter = $Databases.Count
         Write-Log -Level INFO -Message "Included ${includedByFilter} database(s) from ${beforeCount} by IncludeDatabases filter: $($IncludeDatabases -join ', ')"
@@ -281,7 +281,7 @@
     # Apply SQL LIKE pattern exclusions
     if ($LikePatterns.Count -gt 0) {
         $beforeCount = $Databases.Count
-        $Databases = $Databases | Where-Object { -not (Test-DatabaseExcluded -DatabaseName $_.Name -ExcludePatterns $LikePatterns) }
+        $Databases = $Databases | Where-Object { -not (Test-DatabaseMatchesPattern -DatabaseName $_.Name -Patterns $LikePatterns) }
         $excludedByPattern = $beforeCount - $Databases.Count
         if ($excludedByPattern -gt 0) {
             Write-Log -Level INFO -Message "Excluded ${excludedByPattern} database(s) by LIKE pattern(s): $($LikePatterns -join ', ')"
