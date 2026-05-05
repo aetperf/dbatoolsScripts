@@ -402,7 +402,7 @@
                  {  
                     $ErrorMessage = ""
                     foreach ($warning in $WarningVariable) {
-                        $ErrorMessage += $WarningVariable.Message
+                        $ErrorMessage += $warning.Message
                         $ErrorMessage += "`n"  
                     }
                     Write-Output "Warnings occurred: $ErrorMessage"
