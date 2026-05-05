@@ -247,13 +247,13 @@
         Write-Host ""
         Write-Host "=== WhatIf Summary ===" -ForegroundColor Cyan
         Write-Host "Would delete : ${wouldDeleteCount} file(s), ${wouldDeleteSizeMB} MB" -ForegroundColor Yellow
-        Write-Host "Would skip   : ${totalSkippedCount} file(s) (excluded databases)" -ForegroundColor DarkGray
+        Write-Host "Would skip   : ${totalSkippedCount} file(s) (filtered by include/exclude database rules)" -ForegroundColor DarkGray
         Write-Host "=== No action performed ===" -ForegroundColor Cyan
     }
     else {
         Write-Log -Level INFO -Message "=== Purge Summary ==="
         Write-Log -Level INFO -Message "Deleted : ${totalDeletedCount} file(s), ${totalDeletedSizeMB} MB"
-        Write-Log -Level INFO -Message "Skipped : ${totalSkippedCount} file(s) (excluded databases)"
+        Write-Log -Level INFO -Message "Skipped : ${totalSkippedCount} file(s) (filtered by include/exclude database rules)"
 
         if ($hasError) {
             Write-Log -Level ERROR -Message "Some files could not be deleted, check log for details"
