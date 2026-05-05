@@ -415,15 +415,12 @@
                 $silentres = $ResultsDict.TryAdd($Database,$resbackup)
             }
             catch  {
-                if ($WarningVariable)
-                 {  
-                    $ErrorMessage = ""
+                $ErrorMessage = $_.Exception.Message
+                if ($WarningVariable) {
                     foreach ($warning in $WarningVariable) {
-                        $ErrorMessage += $warning.Message
-                        $ErrorMessage += "`n"  
+                        $ErrorMessage += "`n[Warning] $($warning.Message)"
                     }
-                    Write-Output "Warnings occurred: $ErrorMessage"
-                 }            
+                }
                 $ExitError=[PSCustomObject]@{Database = $Database; ErrorMessage = $ErrorMessage}                
                 $ResultsDict.TryAdd($Database,$ExitError)
             } 
