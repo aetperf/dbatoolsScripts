@@ -4,7 +4,7 @@
     .DESCRIPTION
         Removes backup files older than a specified retention period for all databases of an instance.
         Only deletes files matching the specified backup type extension (.bak for Full/Diff, .trn for Log).
-        Supports exclusion of databases by exact name or SQL LIKE patterns (e.g. %_NOBACKUP, TEST%).
+        Supports inclusion and exclusion of databases by exact name or SQL LIKE patterns (e.g. %_NOBACKUP, TEST%).
        
     .PARAMETER SqlInstance
         The SQL Server instance whose backup files should be purged.
@@ -22,6 +22,12 @@
 
     .PARAMETER RetentionHours
         Retention period in hours. Files older than this will be deleted.
+
+    .PARAMETER IncludeDatabases
+        Array of database names or SQL LIKE patterns to include in purge.
+        If specified, ONLY databases matching these patterns will be purged.
+        Exact names (e.g. "MyDB") and patterns using % and _ wildcards are supported.
+        Example: @("PROD%", "MyDB", "%_CRITICAL")
 
     .PARAMETER ExcludeDatabases
         Array of database names or SQL LIKE patterns to exclude from purge.
@@ -66,6 +72,7 @@
         [Parameter(Mandatory)] [ValidateSet('Full','Diff','Log','All')] [string] $BackupType,
         [Parameter(Mandatory)] [string] $BackupDirectory,
         [Parameter(Mandatory)] [Int32] $RetentionHours,
+        [Parameter()] [string[]] $IncludeDatabases = @(),
         [Parameter()] [string[]] $ExcludeDatabases = @(),
         [Parameter()] [switch] $WhatIf,
         [Parameter()] [string] $LogLevel = "INFO",
@@ -83,12 +90,12 @@
         return "^${escaped}$"
     }
 
-    function Test-DatabaseExcluded {
+    function Test-DatabaseMatchesPattern {
         param(
             [string]$DatabaseName,
-            [string[]]$ExcludePatterns
+            [string[]]$Patterns
         )
-        foreach ($pattern in $ExcludePatterns) {
+        foreach ($pattern in $Patterns) {
             if ($pattern -match '[%_]') {
                 $regex = Convert-SqlLikeToRegex -Pattern $pattern
                 if ($DatabaseName -match $regex) { return $true }
@@ -127,6 +134,7 @@
     Write-Log -Level INFO -Message "Parameter BackupType : ${BackupType}"
     Write-Log -Level INFO -Message "Parameter BackupDirectory : ${BackupDirectory}"
     Write-Log -Level INFO -Message "Parameter RetentionHours : ${RetentionHours}"
+    Write-Log -Level INFO -Message "Parameter IncludeDatabases : $($IncludeDatabases -join ', ')"
     Write-Log -Level INFO -Message "Parameter ExcludeDatabases : $($ExcludeDatabases -join ', ')"
 
     # Determine which extensions and subfolder patterns to target
@@ -180,8 +188,16 @@
         foreach ($group in $groupedFiles) {
             $dbName = $group.Name
 
+            # Check inclusion filter
+            if ($IncludeDatabases.Count -gt 0 -and -not (Test-DatabaseMatchesPattern -DatabaseName $dbName -Patterns $IncludeDatabases)) {
+                $skippedSizeMB = [math]::Round(($group.Group | Measure-Object -Property Length -Sum).Sum / 1MB, 2)
+                Write-Log -Level INFO -Message "SKIPPED (not included): ${dbName} - $($group.Count) file(s), ${skippedSizeMB} MB"
+                $totalSkippedCount += $group.Count
+                continue
+            }
+
             # Check exclusion
-            if ($ExcludeDatabases.Count -gt 0 -and (Test-DatabaseExcluded -DatabaseName $dbName -ExcludePatterns $ExcludeDatabases)) {
+            if ($ExcludeDatabases.Count -gt 0 -and (Test-DatabaseMatchesPattern -DatabaseName $dbName -Patterns $ExcludeDatabases)) {
                 $skippedSizeMB = [math]::Round(($group.Group | Measure-Object -Property Length -Sum).Sum / 1MB, 2)
                 Write-Log -Level INFO -Message "SKIPPED (excluded): ${dbName} - $($group.Count) file(s), ${skippedSizeMB} MB"
                 $totalSkippedCount += $group.Count
@@ -217,12 +233,16 @@
         $wouldDeleteCount = ($allFiles | Where-Object { 
             $parts = $_.FullName.Replace($BackupDirectory, '').TrimStart('\').Split('\')
             $dbName = if ($parts.Count -ge 3) { $parts[2] } else { "UNKNOWN" }
-            -not (Test-DatabaseExcluded -DatabaseName $dbName -ExcludePatterns $ExcludeDatabases)
+            $included = ($IncludeDatabases.Count -eq 0) -or (Test-DatabaseMatchesPattern -DatabaseName $dbName -Patterns $IncludeDatabases)
+            $excluded = ($ExcludeDatabases.Count -gt 0) -and (Test-DatabaseMatchesPattern -DatabaseName $dbName -Patterns $ExcludeDatabases)
+            $included -and -not $excluded
         }).Count
         $wouldDeleteSizeMB = [math]::Round(($allFiles | Where-Object { 
             $parts = $_.FullName.Replace($BackupDirectory, '').TrimStart('\').Split('\')
             $dbName = if ($parts.Count -ge 3) { $parts[2] } else { "UNKNOWN" }
-            -not (Test-DatabaseExcluded -DatabaseName $dbName -ExcludePatterns $ExcludeDatabases)
+            $included = ($IncludeDatabases.Count -eq 0) -or (Test-DatabaseMatchesPattern -DatabaseName $dbName -Patterns $IncludeDatabases)
+            $excluded = ($ExcludeDatabases.Count -gt 0) -and (Test-DatabaseMatchesPattern -DatabaseName $dbName -Patterns $ExcludeDatabases)
+            $included -and -not $excluded
         } | Measure-Object -Property Length -Sum).Sum / 1MB, 2)
         Write-Host ""
         Write-Host "=== WhatIf Summary ===" -ForegroundColor Cyan
