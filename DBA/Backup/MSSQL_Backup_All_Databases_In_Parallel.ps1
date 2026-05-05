@@ -148,60 +148,48 @@
             Deletes all backup files (*.bak and *.trn) regardless of backup type.
             Restricts cleanup to the current instance subfolder to avoid deleting
             backups from other instances sharing the same root directory.
-            Skips databases listed in SkipDatabases (e.g. failed backups).
+            Only purges files belonging to databases listed in the Databases parameter.
         #>
         param(
             [string]$BackupDirectory,
-            [string]$SqlInstance,
+            [string]$ComputerName,
+            [string]$InstanceName,
             [int]$CleanupTime,
-            [string[]]$SkipDatabases = @()
+            [string[]]$Databases = @()
         )
 
         if ($CleanupTime -le 0) { return }
+        if ($Databases.Count -eq 0) {
+            Write-Log -Level INFO -Message "Cleanup: no databases specified, skipping"
+            return
+        }
 
-        # Derive instance subfolder from SqlInstance (e.g. "MyServer\INST01" -> "MyServer\INST01", "MyServer" -> "MyServer\MyServer")
-        $instanceParts = $SqlInstance -split '\\'
-        $serverName = $instanceParts[0]
-        $instanceName = if ($instanceParts.Count -gt 1) { $instanceParts[1] } else { $serverName }
-        $instanceSubPath = Join-Path -Path $BackupDirectory -ChildPath (Join-Path -Path $serverName -ChildPath $instanceName)
+        $instanceSubPath = Join-Path -Path $BackupDirectory -ChildPath (Join-Path -Path $ComputerName -ChildPath $InstanceName)
 
         $RetentionDate = (Get-Date).AddHours(-$CleanupTime)
-        Write-Log -Level INFO -Message "Cleanup: removing backup files older than ${RetentionDate} from ${instanceSubPath}"
+        Write-Log -Level INFO -Message "Cleanup: removing backup files older than ${RetentionDate} from ${instanceSubPath} for $($Databases.Count) database(s)"
 
         if (-not (Test-Path $instanceSubPath)) {
             Write-Log -Level INFO -Message "Cleanup: instance directory ${instanceSubPath} does not exist, skipping"
             return
         }
 
-        # Find all backup files (*.bak and *.trn) recursively within the instance subfolder
-        $oldFiles = Get-ChildItem -Path $instanceSubPath -Recurse -File -Include "*.bak","*.trn" |
-            Where-Object { $_.LastWriteTime -lt $RetentionDate }
-
+        # Find and delete old backup files only in target database subfolders
         $deletedCount = 0
-        $skippedCount = 0
-        foreach ($file in $oldFiles) {
-            # Check if this file belongs to a skipped database by extracting the database folder
-            # from the known path structure: BackupDirectory\servername\instancename\dbname\backuptype\file
-            $shouldSkip = $false
-            $backupTypeFolder = Split-Path -Path $file.FullName -Parent
-            $databaseFolderPath = if ($backupTypeFolder) { Split-Path -Path $backupTypeFolder -Parent } else { $null }
-            $databaseFolderName = if ($databaseFolderPath) { Split-Path -Path $databaseFolderPath -Leaf } else { $null }
-            foreach ($skipDb in $SkipDatabases) {
-                if ($databaseFolderName -and $databaseFolderName -ieq $skipDb) {
-                    $shouldSkip = $true
-                    break
-                }
+        $totalScanned = 0
+        foreach ($db in $Databases) {
+            $dbPath = Join-Path -Path $instanceSubPath -ChildPath $db
+            if (-not (Test-Path $dbPath)) { continue }
+            $oldFiles = Get-ChildItem -Path $dbPath -Recurse -File -Include "*.bak","*.trn" |
+                Where-Object { $_.LastWriteTime -lt $RetentionDate }
+            $totalScanned += $oldFiles.Count
+            foreach ($file in $oldFiles) {
+                Write-Log -Level INFO -Message "Cleanup: deleting $($file.FullName)"
+                Remove-Item -Path $file.FullName -Force
+                $deletedCount++
             }
-            if ($shouldSkip) {
-                Write-Log -Level INFO -Message "Cleanup: SKIPPING (failed backup) $($file.FullName)"
-                $skippedCount++
-                continue
-            }
-            Write-Log -Level INFO -Message "Cleanup: deleting $($file.FullName)"
-            Remove-Item -Path $file.FullName -Force
-            $deletedCount++
         }
-        Write-Log -Level INFO -Message "Cleanup complete: ${deletedCount} file(s) deleted, ${skippedCount} file(s) skipped"
+        Write-Log -Level INFO -Message "Cleanup complete: ${deletedCount} file(s) deleted"
     }
 
     #endregion Functions
@@ -331,24 +319,37 @@
         Write-Host ""
         if ($CleanupTime -gt 0) {
             $RetentionDate = (Get-Date).AddHours(-$CleanupTime)
-            Write-Host "Cleanup         : *.${BackupExtension} files older than ${RetentionDate} (${CleanupTime}h retention)" -ForegroundColor Yellow
+            Write-Host "Cleanup         : *.bak and *.trn files older than ${RetentionDate} (${CleanupTime}h retention)" -ForegroundColor Yellow
             Write-Host "Cleanup When    : $CleanupWhen" -ForegroundColor Yellow
+            Write-Host "Cleanup Scope   : only databases being backed up" -ForegroundColor Yellow
             Write-Host ""
-            if (Test-Path $BackupDirectory) {
-                $filesToDelete = Get-ChildItem -Path $BackupDirectory -Recurse -File -Filter "*.${BackupExtension}" |
-                    Where-Object { $_.LastWriteTime -lt $RetentionDate }
+            # Build instance subfolder path from actual SQL Server properties
+            $actualComputerName = ($Databases | Select-Object -First 1).ComputerName
+            $actualInstanceName = ($Databases | Select-Object -First 1).InstanceName
+            $instanceSubPath = Join-Path -Path $BackupDirectory -ChildPath (Join-Path -Path $actualComputerName -ChildPath $actualInstanceName)
+            $DbNamesForCleanup = @($Databases | ForEach-Object { $_.Name })
+
+            if (Test-Path $instanceSubPath) {
+                $filesToDelete = @()
+                foreach ($dbName in $DbNamesForCleanup) {
+                    $dbPath = Join-Path -Path $instanceSubPath -ChildPath $dbName
+                    if (Test-Path $dbPath) {
+                        $filesToDelete += Get-ChildItem -Path $dbPath -Recurse -File -Include "*.bak","*.trn" |
+                            Where-Object { $_.LastWriteTime -lt $RetentionDate }
+                    }
+                }
                 if ($filesToDelete.Count -gt 0) {
                     $totalSizeMB = [math]::Round(($filesToDelete | Measure-Object -Property Length -Sum).Sum / 1MB, 2)
                     Write-Host "Files that would be deleted ($($filesToDelete.Count) files, ${totalSizeMB} MB):" -ForegroundColor Red
-                    $filesToDelete | Group-Object { $_.Directory.Parent.Parent.Name } | Sort-Object Name | ForEach-Object {
+                    $filesToDelete | Group-Object { Split-Path -Path (Split-Path -Path $_.FullName -Parent) -Leaf } | Sort-Object Name | ForEach-Object {
                         $dbSizeMB = [math]::Round(($_.Group | Measure-Object -Property Length -Sum).Sum / 1MB, 2)
                         Write-Host "  - $($_.Name) : $($_.Count) file(s), ${dbSizeMB} MB" -ForegroundColor DarkRed
                     }
                 } else {
-                    Write-Host "No files would be deleted (no *.${BackupExtension} files older than ${RetentionDate})" -ForegroundColor DarkGray
+                    Write-Host "No files would be deleted (no matching files older than ${RetentionDate})" -ForegroundColor DarkGray
                 }
             } else {
-                Write-Host "Backup directory does not exist yet, no files to clean up" -ForegroundColor DarkGray
+                Write-Host "Instance directory does not exist yet, no files to clean up" -ForegroundColor DarkGray
             }
         } else {
             Write-Host "Cleanup         : Disabled" -ForegroundColor DarkGray
@@ -359,10 +360,16 @@
     }
         
     
+    # Derive actual ComputerName and InstanceName from dbatools objects for path resolution
+    $actualComputerName = ($Databases | Select-Object -First 1).ComputerName
+    $actualInstanceName = ($Databases | Select-Object -First 1).InstanceName
+
     # Run pre-backup cleanup if configured
     if ($CleanupWhen -in @('Before','Both') -and $CleanupTime -gt 0) {
         Write-Log -Level INFO -Message "Running pre-backup cleanup..."
-        Invoke-BackupCleanup -BackupDirectory $BackupDirectory -SqlInstance $SqlInstance -CleanupTime $CleanupTime
+        $DbNamesToClean = @($Databases | ForEach-Object { $_.Name })
+        Invoke-BackupCleanup -BackupDirectory $BackupDirectory -ComputerName $actualComputerName `
+            -InstanceName $actualInstanceName -CleanupTime $CleanupTime -Databases $DbNamesToClean
     }
 
     # A concurrent dictionnary to manage log and returns from parallel backups
@@ -465,9 +472,10 @@
         # Run post-backup cleanup if configured (skip failed databases to preserve their last good backup)
         if ($CleanupWhen -in @('After','Both') -and $CleanupTime -gt 0) {
             $FailedDbNames = @($DatabasesBackupProblems | ForEach-Object { $_.Database })
+            $DbNamesToClean = @($Databases | ForEach-Object { $_.Name } | Where-Object { $_ -notin $FailedDbNames })
             Write-Log -Level INFO -Message "Running post-backup cleanup..."
-            Invoke-BackupCleanup -BackupDirectory $BackupDirectory -SqlInstance $SqlInstance `
-                -CleanupTime $CleanupTime -SkipDatabases $FailedDbNames
+            Invoke-BackupCleanup -BackupDirectory $BackupDirectory -ComputerName $actualComputerName `
+                -InstanceName $actualInstanceName -CleanupTime $CleanupTime -Databases $DbNamesToClean
         }
 
         # change Return Code if at least one backup had a problem
