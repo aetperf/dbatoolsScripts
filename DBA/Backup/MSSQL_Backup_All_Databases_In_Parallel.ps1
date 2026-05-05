@@ -146,6 +146,8 @@
         .SYNOPSIS
             Removes old backup files from the backup directory based on retention period.
             Only deletes files matching the backup extension for the current backup type.
+            Restricts cleanup to the current backup type subfolder to avoid deleting
+            Full backups during a Diff run (both use .bak).
             Skips databases listed in SkipDatabases (e.g. failed backups).
         #>
         param(
@@ -159,16 +161,16 @@
         if ($CleanupTime -le 0) { return }
 
         $RetentionDate = (Get-Date).AddHours(-$CleanupTime)
-        Write-Log -Level INFO -Message "Cleanup: removing *.${BackupExtension} files older than ${RetentionDate} from ${BackupDirectory}"
+        Write-Log -Level INFO -Message "Cleanup: removing *.${BackupExtension} files older than ${RetentionDate} from ${BackupDirectory} (type: ${BackupType})"
 
         if (-not (Test-Path $BackupDirectory)) {
             Write-Log -Level INFO -Message "Cleanup: backup directory ${BackupDirectory} does not exist, skipping"
             return
         }
 
-        # Find all backup files matching the extension recursively
+        # Find backup files matching the extension recursively, restricted to the current BackupType subfolder
         $oldFiles = Get-ChildItem -Path $BackupDirectory -Recurse -File -Filter "*.${BackupExtension}" |
-            Where-Object { $_.LastWriteTime -lt $RetentionDate }
+            Where-Object { $_.LastWriteTime -lt $RetentionDate -and $_.FullName -ilike "*\${BackupType}\*" }
 
         $deletedCount = 0
         $skippedCount = 0
