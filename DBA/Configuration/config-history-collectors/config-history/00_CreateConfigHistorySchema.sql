@@ -199,8 +199,8 @@ CREATE TABLE confighistory.WindowsDefenderStatus
     antivirus_signature_version nvarchar(128) NULL,
     antispyware_signature_version nvarchar(128) NULL,
     nise_signature_version nvarchar(128) NULL,
-    quick_scan_age int NULL,
-    full_scan_age int NULL,
+    quick_scan_age bigint NULL,
+    full_scan_age bigint NULL,
     collector_version nvarchar(32) NOT NULL CONSTRAINT DF_DefenderStatus_collector_version DEFAULT(N'1.0')
 );
 GO
