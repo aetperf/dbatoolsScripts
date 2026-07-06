@@ -55,6 +55,15 @@
     .PARAMETER CleanupWhen
         When to run cleanup: Before, After, or Both.
         Default: After
+
+    .PARAMETER EncryptionAlgorithm
+        Encryption algorithm for backup encryption: AES128, AES192, AES256, or TRIPLEDES.
+        Requires EncryptionCertificate to be specified.
+        AES256 is recommended for maximum security.
+
+    .PARAMETER EncryptionCertificate
+        Name of the certificate in the master database used for backup encryption.
+        The certificate must already exist on the SQL Server instance.
         
     .PARAMETER LogDirectory
         Directory where a log file will be stored. 
@@ -98,6 +107,8 @@
         [Parameter()] [Int32] $CleanupTime = 0,
         [Parameter()] [ValidateSet('Before','After','Both')] [string] $CleanupWhen = 'After',
         [Parameter()] [switch] $WhatIf,
+        [Parameter()] [ValidateSet('AES128','AES192','AES256','TRIPLEDES')] [string] $EncryptionAlgorithm,
+        [Parameter()] [string] $EncryptionCertificate,
         [Parameter()] [string] $LogLevel = "INFO",
         [Parameter()] [string] $LogDirectory
     )
@@ -226,6 +237,20 @@
     Write-Log -Level INFO -Message "Parameter NoVerify : ${NoVerify}"
     Write-Log -Level INFO -Message "Parameter CleanupTime : ${CleanupTime} hours"
     Write-Log -Level INFO -Message "Parameter CleanupWhen : ${CleanupWhen}"
+    if ($EncryptionAlgorithm) {
+        Write-Log -Level INFO -Message "Parameter EncryptionAlgorithm : ${EncryptionAlgorithm}"
+        Write-Log -Level INFO -Message "Parameter EncryptionCertificate : ${EncryptionCertificate}"
+    }
+
+    # Validate encryption parameters
+    if ($EncryptionAlgorithm -and -not $EncryptionCertificate) {
+        Write-Log -Level ERROR -Message "EncryptionAlgorithm requires EncryptionCertificate to be specified"
+        exit 1
+    }
+    if ($EncryptionCertificate -and -not $EncryptionAlgorithm) {
+        Write-Log -Level ERROR -Message "EncryptionCertificate requires EncryptionAlgorithm to be specified"
+        exit 1
+    }
     
 
     $silentInsecureConnectionLog=Set-DbatoolsInsecureConnection -SessionOnly
@@ -303,6 +328,9 @@
         Write-Host "Degree          : $Degree" -ForegroundColor White
         Write-Host "Verify          : $(-not $NoVerify)" -ForegroundColor White
         Write-Host "Timeout         : $Timeout seconds" -ForegroundColor White
+        if ($EncryptionAlgorithm) {
+            Write-Host "Encryption      : $EncryptionAlgorithm with certificate '$EncryptionCertificate'" -ForegroundColor White
+        }
         Write-Host ""
         if ($IncludeDatabases.Count -gt 0) {
             Write-Host "Included patterns: $($IncludeDatabases -join ', ')" -ForegroundColor Green
@@ -388,6 +416,8 @@
         $BackupType=$using:BackupType
         $BackupExtension=$using:BackupExtension
         $NoVerifyFlag=$using:NoVerify
+        $EncAlgorithm=$using:EncryptionAlgorithm
+        $EncCertificate=$using:EncryptionCertificate
     
         try {   
                 # Build backup parameters via splatting
@@ -408,6 +438,10 @@
                     
                 }
                 if (-not $NoVerifyFlag) { $BackupParams['Verify'] = $true }
+                if ($EncAlgorithm) {
+                    $BackupParams['EncryptionAlgorithm'] = $EncAlgorithm
+                    $BackupParams['EncryptionCertificate'] = $EncCertificate
+                }
 
                 $resbackup = Backup-DbaDatabase @BackupParams -WarningVariable WarningVariable 
                 
