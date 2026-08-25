@@ -477,7 +477,7 @@ foreach ($CurrentSchemaName in $ResolvedSchemas) {
     
     # Create unique RestoreId and timing for THIS schema
     $start = Get-Date
-    $RestoreStartDatetime = $start.ToString("yyyy-MM-dd HH:mm:ss")
+    $RestoreStartDatetime = $start.ToString("yyyyMMdd HH:mm:ss")
     $RestoreId = [DateTime]::UtcNow.Ticks
     $ErrorCode = 0
     
@@ -585,7 +585,7 @@ VALUES ($RestoreId, 'ENSURE SCHEMA IN TARGET', 'SCHEMA', '$SchemaName', '$Schema
 
                 $end = Get-Date
 
-                $RestoreEndDatetime = $end.ToString("yyyy-MM-dd HH:mm:ss")
+                $RestoreEndDatetime = $end.ToString("yyyyMMdd HH:mm:ss")
 
                 $logQuery = "INSERT INTO dbo.RestoreSchemaLog (RestoreId,RestoreStartDatetime,RestoreEndDatetime,SourceDB,TargetDB,SchemaName,ErrorCode,Message)
 
@@ -991,7 +991,7 @@ foreach ($viewName in $sortedTarget) {
 
                 $end = Get-Date
 
-                $RestoreEndDatetime = $end.ToString("yyyy-MM-dd HH:mm:ss")
+                $RestoreEndDatetime = $end.ToString("yyyyMMdd HH:mm:ss")
 
                 $logQuery = "INSERT INTO dbo.RestoreSchemaLog (RestoreId,RestoreStartDatetime,RestoreEndDatetime,SourceDB,TargetDB,SchemaName,ErrorCode,Message)
 
@@ -1267,7 +1267,7 @@ foreach ($udfName in $sortedUdf) {
 
                 $end = Get-Date
 
-                $RestoreEndDatetime = $end.ToString("yyyy-MM-dd HH:mm:ss")
+                $RestoreEndDatetime = $end.ToString("yyyyMMdd HH:mm:ss")
 
                 $logQuery = "INSERT INTO dbo.RestoreSchemaLog (RestoreId, RestoreStartDatetime, RestoreEndDatetime, SourceDB, TargetDB, SchemaName, ErrorCode, Message)
 
@@ -1475,7 +1475,7 @@ if($ErrorCode -eq 1 -and !$ContinueOnError){
 
     $end = Get-Date
 
-    $RestoreEndDatetime = $end.ToString("yyyy-MM-dd HH:mm:ss")
+    $RestoreEndDatetime = $end.ToString("yyyyMMdd HH:mm:ss")
 
     $logQuery = "INSERT INTO dbo.RestoreSchemaLog (RestoreId,RestoreStartDatetime,RestoreEndDatetime,SourceDB,TargetDB,SchemaName,ErrorCode,Message)
 
@@ -2241,7 +2241,7 @@ foreach ($tableEntry in $TableResults.GetEnumerator()) {
 
             $end = Get-Date
 
-            $RestoreEndDatetime = $end.ToString("yyyy-MM-dd HH:mm:ss")
+            $RestoreEndDatetime = $end.ToString("yyyyMMdd HH:mm:ss")
 
             $logQuery = "INSERT INTO dbo.RestoreSchemaLog (RestoreId,RestoreStartDatetime,RestoreEndDatetime,SourceDB,TargetDB,SchemaName,ErrorCode,Message)
 
@@ -2497,7 +2497,7 @@ if($ErrorCode -eq 1 -and !$ContinueOnError){
 
     $end = Get-Date
 
-    $RestoreEndDatetime = $end.ToString("yyyy-MM-dd HH:mm:ss")
+    $RestoreEndDatetime = $end.ToString("yyyyMMdd HH:mm:ss")
 
     $logQuery = "INSERT INTO dbo.RestoreSchemaLog (RestoreId,RestoreStartDatetime,RestoreEndDatetime,SourceDB,TargetDB,SchemaName,ErrorCode,Message)
 
@@ -2753,7 +2753,7 @@ if ($functionsSource.Count -ne 0) {
 
                     $end = Get-Date
 
-                    $RestoreEndDatetime = $end.ToString("yyyy-MM-dd HH:mm:ss")
+                    $RestoreEndDatetime = $end.ToString("yyyyMMdd HH:mm:ss")
 
                     $logQuery = "INSERT INTO dbo.RestoreSchemaLog (RestoreId,RestoreStartDatetime,RestoreEndDatetime,SourceDB,TargetDB,SchemaName,ErrorCode,Message)
 
@@ -3063,7 +3063,7 @@ if($viewsSource.Count -ne 0){
 
                     $end = Get-Date
 
-                    $RestoreEndDatetime = $end.ToString("yyyy-MM-dd HH:mm:ss")
+                    $RestoreEndDatetime = $end.ToString("yyyyMMdd HH:mm:ss")
 
                     $logQuery = "INSERT INTO dbo.RestoreSchemaLog (RestoreId,RestoreStartDatetime,RestoreEndDatetime,SourceDB,TargetDB,SchemaName,ErrorCode,Message)
 
@@ -3229,7 +3229,7 @@ if($ErrorCode -eq 1 -and !$ContinueOnError){
 
     $end = Get-Date
 
-    $RestoreEndDatetime = $end.ToString("yyyy-MM-dd HH:mm:ss")
+    $RestoreEndDatetime = $end.ToString("yyyyMMdd HH:mm:ss")
 
     $logQuery = "INSERT INTO dbo.RestoreSchemaLog (RestoreId,RestoreStartDatetime,RestoreEndDatetime,SourceDB,TargetDB,SchemaName,ErrorCode,Message)
 
@@ -3437,7 +3437,7 @@ if($ErrorCode -eq 1 -and !$ContinueOnError){
 
     $end = Get-Date
 
-    $RestoreEndDatetime = $end.ToString("yyyy-MM-dd HH:mm:ss")
+    $RestoreEndDatetime = $end.ToString("yyyyMMdd HH:mm:ss")
 
     $logQuery = "INSERT INTO dbo.RestoreSchemaLog (RestoreId,RestoreStartDatetime,RestoreEndDatetime,SourceDB,TargetDB,SchemaName,ErrorCode,Message)
 
@@ -3533,7 +3533,7 @@ VALUES ($RestoreId, 'DROP SYNONYM', 'SYNONYM', '$synSchema', '$synName', 'DROP',
 
 if ($ErrorCode -eq 1 -and !$ContinueOnError) {
     $end = Get-Date
-    $RestoreEndDatetime = $end.ToString("yyyy-MM-dd HH:mm:ss")
+    $RestoreEndDatetime = $end.ToString("yyyyMMdd HH:mm:ss")
     $logQuery = "INSERT INTO dbo.RestoreSchemaLog (RestoreId,RestoreStartDatetime,RestoreEndDatetime,SourceDB,TargetDB,SchemaName,ErrorCode,Message)
     VALUES ($RestoreId,'$RestoreStartDatetime','$RestoreEndDatetime','$SourceDB','$TargetDB','$SchemaNameForLog',$ErrorCode,'Error during the DROP SYNONYM')"
     Invoke-DbaQuery -SqlInstance $LogInstance -Database $LogDatabase -Query $logQuery
@@ -3614,7 +3614,7 @@ VALUES ($RestoreId, 'CREATE SYNONYM', 'SYNONYM', '$synSchema', '$synName', 'CREA
 
 if ($ErrorCode -eq 1 -and !$ContinueOnError) {
     $end = Get-Date
-    $RestoreEndDatetime = $end.ToString("yyyy-MM-dd HH:mm:ss")
+    $RestoreEndDatetime = $end.ToString("yyyyMMdd HH:mm:ss")
     $logQuery = "INSERT INTO dbo.RestoreSchemaLog (RestoreId,RestoreStartDatetime,RestoreEndDatetime,SourceDB,TargetDB,SchemaName,ErrorCode,Message)
     VALUES ($RestoreId,'$RestoreStartDatetime','$RestoreEndDatetime','$SourceDB','$TargetDB','$SchemaNameForLog',$ErrorCode,'Error during the CREATE SYNONYM')"
     Invoke-DbaQuery -SqlInstance $LogInstance -Database $LogDatabase -Query $logQuery
@@ -3665,7 +3665,7 @@ if(!$WhatIf){
 
     }
 
-    $RestoreEndDatetime = $end.ToString("yyyy-MM-dd HH:mm:ss")
+    $RestoreEndDatetime = $end.ToString("yyyyMMdd HH:mm:ss")
 
     $logQuery = "INSERT INTO dbo.RestoreSchemaLog (RestoreId,RestoreStartDatetime,RestoreEndDatetime,SourceDB,TargetDB,SchemaName,ErrorCode,Message)
 
